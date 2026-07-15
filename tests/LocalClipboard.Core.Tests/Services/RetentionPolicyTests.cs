@@ -51,17 +51,32 @@ public sealed class RetentionPolicyTests
         Assert.Equal(new[] { oldest.Id }, result);
     }
 
+    [Fact]
+    public void SelectForDeletion_ImageWithoutPath_StillCountsTowardImageBudget()
+    {
+        var oldest = Entry("oldest", Now.AddMinutes(-2), contentType: ClipboardContentType.Image, encodedSize: 10);
+        var newest = Entry("newest", Now.AddMinutes(-1), contentType: ClipboardContentType.Image, encodedSize: 10);
+
+        var result = RetentionPolicy.SelectForDeletion(
+            [oldest, newest],
+            Now,
+            new RetentionLimits(10, TimeSpan.FromDays(30), 15, 1_000));
+
+        Assert.Equal(new[] { oldest.Id }, result);
+    }
+
     private static ClipboardEntry Entry(
         string hash,
         DateTimeOffset lastUsedAt,
         bool isFavorite = false,
         string? imagePath = null,
-        long encodedSize = 0)
+        long encodedSize = 0,
+        ClipboardContentType? contentType = null)
     {
         return new ClipboardEntry(
             Guid.NewGuid(),
-            imagePath is null ? ClipboardContentType.Text : ClipboardContentType.Image,
-            imagePath is null ? hash : null,
+            contentType ?? (imagePath is null ? ClipboardContentType.Text : ClipboardContentType.Image),
+            contentType == ClipboardContentType.Image || imagePath is not null ? null : hash,
             hash,
             imagePath,
             imagePath is null ? null : imagePath + ".thumb",

@@ -60,6 +60,29 @@ public sealed class HistoryServiceTests
     }
 
     [Fact]
+    public async Task CaptureAsync_WhenInsertAndCleanupFail_ThrowsAggregateAndUsesNonCancelableCleanupToken()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var databaseException = new InvalidOperationException("db");
+        var cleanupException = new IOException("cleanup");
+        var repository = new FakeHistoryRepository
+        {
+            ThrowOnInsert = databaseException,
+            CancelOnInsertFailure = cancellation,
+        };
+        var imageStore = new FakeImageStore { DeleteException = cleanupException };
+        var service = CreateService(repository, imageStore);
+
+        var exception = await Assert.ThrowsAsync<AggregateException>(() => service.CaptureAsync(
+            new ClipboardCapture(ClipboardContentType.Image, null, [1, 2], 2, 1, Now),
+            cancellation.Token));
+
+        Assert.Equal(new Exception[] { databaseException, cleanupException }, exception.InnerExceptions);
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.False(Assert.Single(imageStore.DeleteTokens).CanBeCanceled);
+    }
+
+    [Fact]
     public async Task CaptureAsync_CreatesCompleteTextAndImageEntries()
     {
         var repository = new FakeHistoryRepository();
@@ -124,6 +147,44 @@ public sealed class HistoryServiceTests
         Assert.Equal(3, repository.Inserted.Count);
         Assert.Empty(repository.Touches);
         Assert.Equal(new[] { "A", "B", "A" }, repository.Entries.Select(entry => entry.TextContent));
+    }
+
+    [Fact]
+    public async Task CaptureAsync_ConcurrentIdenticalCaptures_InsertOnceAndTouchSecond()
+    {
+        var repository = new FakeHistoryRepository { PauseFirstGetLatest = true };
+        var service = CreateService(repository);
+        var capture = new ClipboardCapture(ClipboardContentType.Text, "same", null, 0, 0, Now);
+
+        var firstTask = service.CaptureAsync(capture, CancellationToken.None);
+        await repository.FirstGetLatestEntered;
+        var secondTask = service.CaptureAsync(capture with { CapturedAt = Now.AddMinutes(1) }, CancellationToken.None);
+        SpinWait.SpinUntil(() => repository.GetLatestCallCount >= 2, TimeSpan.FromMilliseconds(100));
+        repository.ReleaseFirstGetLatest();
+        await Task.WhenAll(firstTask, secondTask);
+
+        Assert.Single(repository.Entries);
+        var inserted = Assert.Single(repository.Inserted);
+        Assert.Equal(Now, inserted.CreatedAt);
+        Assert.Equal((inserted.Id, Now.AddMinutes(1)), Assert.Single(repository.Touches));
+        Assert.Equal(Now.AddMinutes(1), repository.Entries[0].LastUsedAt);
+    }
+
+    [Fact]
+    public async Task CaptureAsync_OlderConsecutiveDuplicate_DoesNotMoveLastUsedAtBackward()
+    {
+        var repository = new FakeHistoryRepository();
+        var latest = Entry(ContentHasher.HashText("same"), Now, null);
+        repository.Entries.Add(latest);
+        var service = CreateService(repository);
+
+        var result = await service.CaptureAsync(
+            new ClipboardCapture(ClipboardContentType.Text, "same", null, 0, 0, Now.AddMinutes(-1)),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(Now, result!.LastUsedAt);
+        Assert.Equal((latest.Id, Now), Assert.Single(repository.Touches));
     }
 
     [Fact]
@@ -192,6 +253,32 @@ public sealed class HistoryServiceTests
             imageStore.DeletedImages);
     }
 
+    [Fact]
+    public async Task ClearAsync_WhenFirstImageCleanupFails_ContinuesAndAggregatesCleanupFailures()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var repository = new FakeHistoryRepository();
+        var first = Entry("first", Now.AddMinutes(-2), "first.png");
+        var second = Entry("second", Now.AddMinutes(-1), "second.png");
+        repository.Entries.Add(first);
+        repository.Entries.Add(second);
+        var cleanupException = new IOException("first cleanup");
+        var imageStore = new FakeImageStore();
+        imageStore.DeleteExceptionsByImagePath.Add(first.ImagePath!, cleanupException);
+        var service = CreateService(repository, imageStore);
+
+        var exception = await Assert.ThrowsAsync<AggregateException>(() => service.ClearAsync(
+            includeFavorites: true,
+            cancellation.Token));
+
+        Assert.Equal(new[] { cleanupException }, exception.InnerExceptions);
+        Assert.Equal(new[] { first.Id, second.Id }, repository.DeletedIds);
+        Assert.Equal(
+            new[] { (first.ImagePath, first.ThumbnailPath), (second.ImagePath, second.ThumbnailPath) },
+            imageStore.DeletedImages);
+        Assert.All(imageStore.DeleteTokens, token => Assert.False(token.CanBeCanceled));
+    }
+
     private static HistoryService CreateService(
         FakeHistoryRepository repository,
         FakeImageStore? imageStore = null,
@@ -213,8 +300,27 @@ public sealed class HistoryServiceTests
         public List<(Guid Id, bool IsFavorite)> FavoriteChanges { get; } = [];
         public List<Guid> DeletedIds { get; } = [];
         public Exception? ThrowOnInsert { get; init; }
+        public CancellationTokenSource? CancelOnInsertFailure { get; init; }
+        public bool PauseFirstGetLatest { get; init; }
+        public int GetLatestCallCount => getLatestCallCount;
+        public Task FirstGetLatestEntered => firstGetLatestEntered.Task;
 
-        public Task<ClipboardEntry?> GetLatestAsync(CancellationToken cancellationToken) => Task.FromResult(Entries.OrderByDescending(entry => entry.LastUsedAt).FirstOrDefault());
+        private readonly TaskCompletionSource firstGetLatestEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstGetLatest = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int getLatestCallCount;
+
+        public async Task<ClipboardEntry?> GetLatestAsync(CancellationToken cancellationToken)
+        {
+            var call = Interlocked.Increment(ref getLatestCallCount);
+            if (PauseFirstGetLatest && call == 1)
+            {
+                firstGetLatestEntered.SetResult();
+                await releaseFirstGetLatest.Task.WaitAsync(cancellationToken);
+            }
+
+            lock (Entries) return Entries.OrderByDescending(entry => entry.LastUsedAt).FirstOrDefault();
+        }
+        public void ReleaseFirstGetLatest() => releaseFirstGetLatest.TrySetResult();
         public Task<IReadOnlyList<ClipboardEntry>> GetAllAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<ClipboardEntry>>(Entries.OrderBy(entry => entry.LastUsedAt).ToList());
         public Task<IReadOnlyList<ClipboardEntry>> QueryAsync(HistoryQuery query, CancellationToken cancellationToken)
         {
@@ -226,9 +332,16 @@ public sealed class HistoryServiceTests
         }
         public Task InsertAsync(ClipboardEntry entry, CancellationToken cancellationToken)
         {
-            if (ThrowOnInsert is not null) throw ThrowOnInsert;
-            Entries.Add(entry);
-            Inserted.Add(entry);
+            if (ThrowOnInsert is not null)
+            {
+                CancelOnInsertFailure?.Cancel();
+                throw ThrowOnInsert;
+            }
+            lock (Entries)
+            {
+                Entries.Add(entry);
+                Inserted.Add(entry);
+            }
             return Task.CompletedTask;
         }
         public Task TouchAsync(Guid id, DateTimeOffset usedAt, CancellationToken cancellationToken)
@@ -263,6 +376,9 @@ public sealed class HistoryServiceTests
     {
         public List<(Guid EntryId, string Hash, byte[] PngBytes, int Width, int Height, string ImagePath, string ThumbnailPath)> SaveCalls { get; } = [];
         public List<(string? ImagePath, string? ThumbnailPath)> DeletedImages { get; } = [];
+        public List<CancellationToken> DeleteTokens { get; } = [];
+        public Dictionary<string, Exception> DeleteExceptionsByImagePath { get; } = [];
+        public Exception? DeleteException { get; init; }
 
         public Task<StoredImage> SaveAsync(Guid entryId, string hash, byte[] pngBytes, int width, int height, CancellationToken cancellationToken)
         {
@@ -274,6 +390,9 @@ public sealed class HistoryServiceTests
         public Task DeleteAsync(string? imagePath, string? thumbnailPath, CancellationToken cancellationToken)
         {
             DeletedImages.Add((imagePath, thumbnailPath));
+            DeleteTokens.Add(cancellationToken);
+            if (imagePath is not null && DeleteExceptionsByImagePath.TryGetValue(imagePath, out var pathException)) throw pathException;
+            if (DeleteException is not null) throw DeleteException;
             return Task.CompletedTask;
         }
         public Task DeleteOrphansAsync(IReadOnlySet<string> referencedPaths, CancellationToken cancellationToken) => Task.CompletedTask;

@@ -8,6 +8,7 @@ public sealed class HistoryService
     private readonly IHistoryRepository repository;
     private readonly IImageStore imageStore;
     private readonly RetentionLimits limits;
+    private readonly SemaphoreSlim mutationGate = new(1, 1);
 
     public HistoryService(IHistoryRepository repository, IImageStore imageStore, RetentionLimits limits)
     {
@@ -18,6 +19,19 @@ public sealed class HistoryService
 
     public async Task<ClipboardEntry?> CaptureAsync(ClipboardCapture capture, CancellationToken cancellationToken)
     {
+        await mutationGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await CaptureCoreAsync(capture, cancellationToken);
+        }
+        finally
+        {
+            mutationGate.Release();
+        }
+    }
+
+    private async Task<ClipboardEntry?> CaptureCoreAsync(ClipboardCapture capture, CancellationToken cancellationToken)
+    {
         var isText = capture.ContentType == ClipboardContentType.Text;
         if (isText && string.IsNullOrEmpty(capture.Text)) return null;
         if (!isText && (capture.PngBytes is null || capture.PngBytes.Length == 0)) return null;
@@ -27,8 +41,9 @@ public sealed class HistoryService
         var latest = await repository.GetLatestAsync(cancellationToken);
         if (latest is not null && latest.ContentType == capture.ContentType && latest.ContentHash == hash)
         {
-            await repository.TouchAsync(latest.Id, capture.CapturedAt, cancellationToken);
-            return latest with { LastUsedAt = capture.CapturedAt };
+            var usedAt = latest.LastUsedAt >= capture.CapturedAt ? latest.LastUsedAt : capture.CapturedAt;
+            await repository.TouchAsync(latest.Id, usedAt, cancellationToken);
+            return latest with { LastUsedAt = usedAt };
         }
 
         var entryId = Guid.NewGuid();
@@ -40,43 +55,112 @@ public sealed class HistoryService
         {
             await repository.InsertAsync(entry, cancellationToken);
         }
-        catch
+        catch (Exception insertException)
         {
-            if (storedImage is not null) await imageStore.DeleteAsync(storedImage.ImagePath, storedImage.ThumbnailPath, cancellationToken);
+            if (storedImage is not null)
+            {
+                try
+                {
+                    await imageStore.DeleteAsync(storedImage.ImagePath, storedImage.ThumbnailPath, CancellationToken.None);
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException(insertException, cleanupException);
+                }
+            }
+
             throw;
         }
 
-        await EnforceRetentionAsync(capture.CapturedAt, cancellationToken);
+        await EnforceRetentionCoreAsync(capture.CapturedAt, cancellationToken);
         return entry;
     }
 
     public Task<IReadOnlyList<ClipboardEntry>> QueryAsync(HistoryQuery query, CancellationToken cancellationToken) => repository.QueryAsync(query, cancellationToken);
-    public Task SetFavoriteAsync(Guid id, bool isFavorite, CancellationToken cancellationToken) => repository.SetFavoriteAsync(id, isFavorite, cancellationToken);
+    public async Task SetFavoriteAsync(Guid id, bool isFavorite, CancellationToken cancellationToken)
+    {
+        await mutationGate.WaitAsync(cancellationToken);
+        try
+        {
+            await repository.SetFavoriteAsync(id, isFavorite, cancellationToken);
+        }
+        finally
+        {
+            mutationGate.Release();
+        }
+    }
 
     public async Task DeleteAsync(ClipboardEntry entry, CancellationToken cancellationToken)
     {
-        await repository.DeleteAsync(entry.Id, cancellationToken);
-        await imageStore.DeleteAsync(entry.ImagePath, entry.ThumbnailPath, cancellationToken);
+        await mutationGate.WaitAsync(cancellationToken);
+        try
+        {
+            await DeleteCoreAsync(entry, cancellationToken, null);
+        }
+        finally
+        {
+            mutationGate.Release();
+        }
     }
 
     public async Task ClearAsync(bool includeFavorites, CancellationToken cancellationToken)
     {
-        var entries = await repository.GetAllAsync(cancellationToken);
-        foreach (var entry in entries.Where(entry => includeFavorites || !entry.IsFavorite).ToList())
+        await mutationGate.WaitAsync(cancellationToken);
+        try
         {
-            await repository.DeleteAsync(entry.Id, cancellationToken);
-            await imageStore.DeleteAsync(entry.ImagePath, entry.ThumbnailPath, cancellationToken);
+            var entries = await repository.GetAllAsync(cancellationToken);
+            await DeleteBatchCoreAsync(entries.Where(entry => includeFavorites || !entry.IsFavorite).ToList(), cancellationToken);
+        }
+        finally
+        {
+            mutationGate.Release();
         }
     }
 
     public async Task EnforceRetentionAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
+        await mutationGate.WaitAsync(cancellationToken);
+        try
+        {
+            await EnforceRetentionCoreAsync(now, cancellationToken);
+        }
+        finally
+        {
+            mutationGate.Release();
+        }
+    }
+
+    private async Task EnforceRetentionCoreAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
         var entries = await repository.GetAllAsync(cancellationToken);
         var ids = RetentionPolicy.SelectForDeletion(entries, now, limits);
-        foreach (var entry in entries.Where(entry => ids.Contains(entry.Id)))
+        await DeleteBatchCoreAsync(entries.Where(entry => ids.Contains(entry.Id)).ToList(), cancellationToken);
+    }
+
+    private async Task DeleteBatchCoreAsync(IReadOnlyList<ClipboardEntry> entries, CancellationToken cancellationToken)
+    {
+        var cleanupFailures = new List<Exception>();
+        foreach (var entry in entries)
         {
-            await repository.DeleteAsync(entry.Id, cancellationToken);
-            await imageStore.DeleteAsync(entry.ImagePath, entry.ThumbnailPath, cancellationToken);
+            await DeleteCoreAsync(entry, cancellationToken, cleanupFailures);
+        }
+
+        if (cleanupFailures.Count > 0)
+        {
+            throw new AggregateException(cleanupFailures);
+        }
+    }
+
+    private async Task DeleteCoreAsync(ClipboardEntry entry, CancellationToken cancellationToken, List<Exception>? cleanupFailures)
+    {
+        await repository.DeleteAsync(entry.Id, cancellationToken);
+        try
+        {
+            await imageStore.DeleteAsync(entry.ImagePath, entry.ThumbnailPath, cleanupFailures is null ? cancellationToken : CancellationToken.None);
+        }
+        catch (Exception exception) when (cleanupFailures is not null)
+        {
+            cleanupFailures.Add(exception);
         }
     }
 }

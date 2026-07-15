@@ -15,8 +15,8 @@ public static class RetentionPolicy
         var remaining = ordinary.Where(entry => !selected.Contains(entry.Id)).OrderByDescending(entry => entry.LastUsedAt).ToList();
         foreach (var entry in remaining.Skip(Math.Max(0, limits.MaximumEntries))) selected.Add(entry.Id);
 
-        var imageBytes = ordinary.Where(entry => entry.ImagePath is not null && !selected.Contains(entry.Id)).Sum(entry => entry.EncodedSize);
-        foreach (var entry in ordinary.Where(entry => entry.ImagePath is not null && !selected.Contains(entry.Id)).OrderBy(entry => entry.LastUsedAt))
+        var imageBytes = ordinary.Where(entry => entry.ContentType == ClipboardContentType.Image && !selected.Contains(entry.Id)).Sum(entry => entry.EncodedSize);
+        foreach (var entry in ordinary.Where(entry => entry.ContentType == ClipboardContentType.Image && !selected.Contains(entry.Id)).OrderBy(entry => entry.LastUsedAt))
         {
             if (imageBytes <= limits.MaximumImageBytes) break;
             selected.Add(entry.Id);
