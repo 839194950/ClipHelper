@@ -8,9 +8,11 @@ public sealed class ContentHasherTests
     public void HashText_NormalizesLineEndings()
     {
         var crlfHash = ContentHasher.HashText("first\r\nsecond");
+        var crHash = ContentHasher.HashText("first\rsecond");
         var lfHash = ContentHasher.HashText("first\nsecond");
 
         Assert.Equal(lfHash, crlfHash);
+        Assert.Equal(lfHash, crHash);
     }
 
     [Fact]
