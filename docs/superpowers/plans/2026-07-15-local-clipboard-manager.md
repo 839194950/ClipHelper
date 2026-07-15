@@ -116,7 +116,7 @@ Run from the repository root:
     dotnet sln LocalClipboard.slnx add tests/LocalClipboard.Infrastructure.Tests/LocalClipboard.Infrastructure.Tests.csproj
     dotnet sln LocalClipboard.slnx add tests/LocalClipboard.App.IntegrationTests/LocalClipboard.App.IntegrationTests.csproj
 
-Expected: seven projects appear in LocalClipboard.slnx.
+Expected: six projects appear in LocalClipboard.slnx: three product projects and three test projects.
 
 - [ ] **Step 3: Add project references and SQLite package**
 
