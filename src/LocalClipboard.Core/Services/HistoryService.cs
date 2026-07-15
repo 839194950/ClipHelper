@@ -8,14 +8,12 @@ public sealed class HistoryService
     private readonly IHistoryRepository repository;
     private readonly IImageStore imageStore;
     private readonly RetentionLimits limits;
-    private readonly TimeProvider timeProvider;
 
-    public HistoryService(IHistoryRepository repository, IImageStore imageStore, RetentionLimits limits, TimeProvider? timeProvider = null)
+    public HistoryService(IHistoryRepository repository, IImageStore imageStore, RetentionLimits limits)
     {
         this.repository = repository;
         this.imageStore = imageStore;
         this.limits = limits;
-        this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<ClipboardEntry?> CaptureAsync(ClipboardCapture capture, CancellationToken cancellationToken)
@@ -48,17 +46,17 @@ public sealed class HistoryService
             throw;
         }
 
+        await EnforceRetentionAsync(capture.CapturedAt, cancellationToken);
         return entry;
     }
 
     public Task<IReadOnlyList<ClipboardEntry>> QueryAsync(HistoryQuery query, CancellationToken cancellationToken) => repository.QueryAsync(query, cancellationToken);
     public Task SetFavoriteAsync(Guid id, bool isFavorite, CancellationToken cancellationToken) => repository.SetFavoriteAsync(id, isFavorite, cancellationToken);
 
-    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken)
+    public async Task DeleteAsync(ClipboardEntry entry, CancellationToken cancellationToken)
     {
-        var entry = (await repository.GetAllAsync(cancellationToken)).FirstOrDefault(candidate => candidate.Id == id);
-        await repository.DeleteAsync(id, cancellationToken);
-        if (entry is not null) await imageStore.DeleteAsync(entry.ImagePath, entry.ThumbnailPath, cancellationToken);
+        await repository.DeleteAsync(entry.Id, cancellationToken);
+        await imageStore.DeleteAsync(entry.ImagePath, entry.ThumbnailPath, cancellationToken);
     }
 
     public async Task ClearAsync(bool includeFavorites, CancellationToken cancellationToken)
@@ -71,10 +69,10 @@ public sealed class HistoryService
         }
     }
 
-    public async Task EnforceRetentionAsync(CancellationToken cancellationToken)
+    public async Task EnforceRetentionAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
         var entries = await repository.GetAllAsync(cancellationToken);
-        var ids = RetentionPolicy.SelectForDeletion(entries, timeProvider.GetUtcNow(), limits);
+        var ids = RetentionPolicy.SelectForDeletion(entries, now, limits);
         foreach (var entry in entries.Where(entry => ids.Contains(entry.Id)))
         {
             await repository.DeleteAsync(entry.Id, cancellationToken);

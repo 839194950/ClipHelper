@@ -4,7 +4,7 @@ namespace LocalClipboard.Core.Services;
 
 public static class RetentionPolicy
 {
-    public static IReadOnlySet<Guid> SelectForDeletion(IReadOnlyList<ClipboardEntry> entries, DateTimeOffset now, RetentionLimits limits)
+    public static IReadOnlySet<Guid> SelectForDeletion(IReadOnlyCollection<ClipboardEntry> entries, DateTimeOffset now, RetentionLimits limits)
     {
         var ordinary = entries.Where(entry => !entry.IsFavorite).ToList();
         var selected = new HashSet<Guid>();

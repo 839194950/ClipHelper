@@ -93,6 +93,40 @@ public sealed class HistoryServiceTests
     }
 
     [Fact]
+    public async Task CaptureAsync_AfterInsert_EnforcesRetentionAndDeletesOldEntryImage()
+    {
+        var repository = new FakeHistoryRepository();
+        var imageStore = new FakeImageStore();
+        var service = CreateService(repository, imageStore, new RetentionLimits(1, TimeSpan.FromDays(30), 1_000, 1_000));
+        var oldEntry = Entry("old", Now.AddMinutes(-1), "old.png");
+        repository.Entries.Add(oldEntry);
+
+        var captured = await service.CaptureAsync(
+            new ClipboardCapture(ClipboardContentType.Text, "new", null, 0, 0, Now),
+            CancellationToken.None);
+
+        Assert.NotNull(captured);
+        Assert.DoesNotContain(repository.Entries, entry => entry.Id == oldEntry.Id);
+        Assert.Contains(repository.Entries, entry => entry.Id == captured.Id);
+        Assert.Equal((oldEntry.ImagePath, oldEntry.ThumbnailPath), Assert.Single(imageStore.DeletedImages));
+    }
+
+    [Fact]
+    public async Task CaptureAsync_NonConsecutiveDuplicate_InsertsNewEntry()
+    {
+        var repository = new FakeHistoryRepository();
+        var service = CreateService(repository);
+
+        await service.CaptureAsync(new ClipboardCapture(ClipboardContentType.Text, "A", null, 0, 0, Now), CancellationToken.None);
+        await service.CaptureAsync(new ClipboardCapture(ClipboardContentType.Text, "B", null, 0, 0, Now.AddMinutes(1)), CancellationToken.None);
+        await service.CaptureAsync(new ClipboardCapture(ClipboardContentType.Text, "A", null, 0, 0, Now.AddMinutes(2)), CancellationToken.None);
+
+        Assert.Equal(3, repository.Inserted.Count);
+        Assert.Empty(repository.Touches);
+        Assert.Equal(new[] { "A", "B", "A" }, repository.Entries.Select(entry => entry.TextContent));
+    }
+
+    [Fact]
     public async Task EnforceRetentionAsync_DeletesPolicyEntriesAndTheirImages()
     {
         var repository = new FakeHistoryRepository();
@@ -103,7 +137,7 @@ public sealed class HistoryServiceTests
         repository.Entries.Add(oldest);
         repository.Entries.Add(newest);
 
-        await service.EnforceRetentionAsync(CancellationToken.None);
+        await service.EnforceRetentionAsync(Now, CancellationToken.None);
 
         Assert.Equal(new[] { oldest.Id }, repository.DeletedIds);
         Assert.Equal((oldest.ImagePath, oldest.ThumbnailPath), Assert.Single(imageStore.DeletedImages));
@@ -122,7 +156,7 @@ public sealed class HistoryServiceTests
 
         var queried = await service.QueryAsync(new HistoryQuery(ContentType: ClipboardContentType.Image), CancellationToken.None);
         await service.SetFavoriteAsync(image.Id, true, CancellationToken.None);
-        await service.DeleteAsync(image.Id, CancellationToken.None);
+        await service.DeleteAsync(image, CancellationToken.None);
         await service.ClearAsync(includeFavorites: false, CancellationToken.None);
 
         Assert.Equal(new[] { image.Id }, queried.Select(entry => entry.Id));
@@ -163,17 +197,12 @@ public sealed class HistoryServiceTests
         FakeImageStore? imageStore = null,
         RetentionLimits? limits = null)
     {
-        return new HistoryService(repository, imageStore ?? new FakeImageStore(), limits ?? new RetentionLimits(100, TimeSpan.FromDays(30), 1_000, 1_000), new FixedTimeProvider(Now));
+        return new HistoryService(repository, imageStore ?? new FakeImageStore(), limits ?? new RetentionLimits(100, TimeSpan.FromDays(30), 1_000, 1_000));
     }
 
     private static ClipboardEntry Entry(string hash, DateTimeOffset lastUsedAt, string? imagePath, bool isFavorite = false)
     {
         return new ClipboardEntry(Guid.NewGuid(), imagePath is null ? ClipboardContentType.Text : ClipboardContentType.Image, imagePath is null ? hash : null, hash, imagePath, imagePath is null ? null : imagePath + ".thumb", imagePath is null ? 0 : 1, imagePath is null ? 0 : 1, imagePath is null ? 0 : 10, lastUsedAt, lastUsedAt, isFavorite);
-    }
-
-    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => now;
     }
 
     private sealed class FakeHistoryRepository : IHistoryRepository
