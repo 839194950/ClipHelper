@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LocalClipboard.App/LocalClipboard.App.csproj" />
+    <Project Path="src/LocalClipboard.Core/LocalClipboard.Core.csproj" />
+    <Project Path="src/LocalClipboard.Infrastructure/LocalClipboard.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LocalClipboard.App.IntegrationTests/LocalClipboard.App.IntegrationTests.csproj" />
+    <Project Path="tests/LocalClipboard.Core.Tests/LocalClipboard.Core.Tests.csproj" />
+    <Project Path="tests/LocalClipboard.Infrastructure.Tests/LocalClipboard.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>
