@@ -6,7 +6,7 @@
 
 **Architecture:** 使用单进程 WinForms 应用和 ApplicationContext 管理托盘生命周期；Core 项目保存领域模型与可测试规则，Infrastructure 项目封装 SQLite、图片文件、Windows API 与配置，App 项目只负责组合依赖和界面。剪贴板通知采用 Windows 消息驱动，不使用轮询；文本存 SQLite，图片存 PNG 文件并在数据库保存元数据。
 
-**Tech Stack:** C# 14、.NET 10 LTS、WinForms、Microsoft.Data.Sqlite.Core 10.0.10、SQLitePCLRaw.bundle_winsqlite3 3.0.3、xUnit、Windows Clipboard API、RegisterHotKey、Named Mutex、Named Pipe
+**Tech Stack:** C# 14、.NET 10 LTS、WinForms、Microsoft.Data.Sqlite.Core 10.0.10、SQLitePCLRaw.provider.winsqlite3 3.0.3、xUnit、Windows Clipboard API、RegisterHotKey、Named Mutex、Named Pipe
 
 **Non-Goals For V1:** 自动粘贴、文件列表、HTML/富文本、OCR、标签分组、云同步、账户、遥测、应用黑名单、敏感内容识别、静态数据加密、自动更新、安装器和 ARM64 发布。
 
@@ -128,9 +128,9 @@ Run:
     dotnet add tests/LocalClipboard.Infrastructure.Tests/LocalClipboard.Infrastructure.Tests.csproj reference src/LocalClipboard.Core/LocalClipboard.Core.csproj src/LocalClipboard.Infrastructure/LocalClipboard.Infrastructure.csproj
     dotnet add tests/LocalClipboard.App.IntegrationTests/LocalClipboard.App.IntegrationTests.csproj reference src/LocalClipboard.Core/LocalClipboard.Core.csproj src/LocalClipboard.Infrastructure/LocalClipboard.Infrastructure.csproj
     dotnet add src/LocalClipboard.Infrastructure/LocalClipboard.Infrastructure.csproj package Microsoft.Data.Sqlite.Core --version 10.0.10
-    dotnet add src/LocalClipboard.Infrastructure/LocalClipboard.Infrastructure.csproj package SQLitePCLRaw.bundle_winsqlite3 --version 3.0.3
+    dotnet add src/LocalClipboard.Infrastructure/LocalClipboard.Infrastructure.csproj package SQLitePCLRaw.provider.winsqlite3 --version 3.0.3
 
-Expected: restore succeeds with no package downgrade or audit warning. Use Microsoft.Data.Sqlite.Core with the Windows system SQLite bundle so the solution does not transitively restore vulnerable SQLitePCLRaw.lib.e_sqlite3 2.1.11 (NU1903 / GHSA-2m69-gcr7-jv3q); do not disable NuGet audit or suppress the warning.
+Expected: restore succeeds with no package downgrade or audit warning. Use Microsoft.Data.Sqlite.Core with SQLitePCLRaw.provider.winsqlite3 so the application binds to the Windows system winsqlite3.dll and does not transitively restore the vulnerable bundled SQLitePCLRaw.lib.e_sqlite3 native library (NU1903 / GHSA-2m69-gcr7-jv3q); do not disable NuGet audit or suppress the warning.
 
 - [ ] **Step 4: Add shared compiler settings**
 
@@ -683,7 +683,7 @@ Run:
 
 ### Task 4: Implement SQLite History Repository
 
-**Package and initialization note:** Infrastructure uses Microsoft.Data.Sqlite.Core 10.0.10 with SQLitePCLRaw.bundle_winsqlite3 3.0.3 to bind the Windows system SQLite provider instead of the vulnerable bundled SQLitePCLRaw.lib.e_sqlite3 2.1.11 native library (NU1903 / GHSA-2m69-gcr7-jv3q). Program must call SQLitePCL.Batteries_V2.Init() once before opening any SqliteConnection; this initialization is required by the bundle provider and must not be replaced by audit suppression.
+**Package and initialization note:** Infrastructure uses Microsoft.Data.Sqlite.Core 10.0.10 with SQLitePCLRaw.provider.winsqlite3 3.0.3 to bind the Windows system winsqlite3.dll instead of carrying the vulnerable bundled SQLitePCLRaw.lib.e_sqlite3 native library (NU1903 / GHSA-2m69-gcr7-jv3q). Before opening any SqliteConnection, Program must call `SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());` followed by `SQLitePCL.raw.FreezeProvider(true);`; do not replace provider initialization with audit suppression.
 
 **Files:**
 - Create: src/LocalClipboard.Infrastructure/Storage/SqliteSchema.cs
@@ -1738,7 +1738,7 @@ Catch background callback exceptions at the context boundary and send only event
 Program.Main must be marked STAThread and perform this order:
 
 1. ApplicationConfiguration.Initialize().
-2. Call SQLitePCL.Batteries_V2.Init() before any code can open a SqliteConnection; SQLitePCLRaw.bundle_winsqlite3 requires this provider initialization.
+2. Before any code can open a SqliteConnection, call `SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());` and then `SQLitePCL.raw.FreezeProvider(true);` so Microsoft.Data.Sqlite uses the Windows system winsqlite3.dll without a bundled e_sqlite3 native library.
 3. Create AppPaths and RollingFileLogger.
 4. Build the per-user SingleInstanceCoordinator name from WindowsIdentity.GetCurrent().User.Value.
 5. If TryAcquirePrimary is false, call SendShowMessageAsync and return.
