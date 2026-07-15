@@ -13,6 +13,8 @@ public static class ContentHasher
 
     public static string HashBytes(ReadOnlySpan<byte> bytes)
     {
-        return Convert.ToHexStringLower(SHA256.HashData(bytes));
+        Span<byte> digest = stackalloc byte[SHA256.HashSizeInBytes];
+        SHA256.HashData(bytes, digest);
+        return Convert.ToHexStringLower(digest);
     }
 }

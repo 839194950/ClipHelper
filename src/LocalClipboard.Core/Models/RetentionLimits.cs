@@ -7,8 +7,8 @@ public sealed record RetentionLimits(
     long MaximumSingleImageBytes)
 {
     public static RetentionLimits Default { get; } = new(
-        500,
-        TimeSpan.FromDays(30),
-        1_073_741_824,
-        20_971_520);
+        MaximumEntries: 500,
+        MaximumAge: TimeSpan.FromDays(30),
+        MaximumImageBytes: 1_073_741_824,
+        MaximumSingleImageBytes: 20_971_520);
 }

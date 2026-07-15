@@ -25,13 +25,14 @@ public sealed class ContentHasherTests
     }
 
     [Fact]
-    public void HashBytes_ReturnsStableLowercaseHex()
+    public void HashBytes_ReturnsExpectedSha256LowercaseHex()
     {
         byte[] bytes = [1, 2, 3];
 
         var firstHash = ContentHasher.HashBytes(bytes);
         var secondHash = ContentHasher.HashBytes(bytes);
 
+        Assert.Equal("039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81", firstHash);
         Assert.Equal(64, firstHash.Length);
         Assert.Equal(firstHash.ToLowerInvariant(), firstHash);
         Assert.Equal(firstHash, secondHash);
