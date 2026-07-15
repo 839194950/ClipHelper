@@ -33,6 +33,7 @@
         Services/HistoryService.cs
       LocalClipboard.Infrastructure/
         LocalClipboard.Infrastructure.csproj
+        Storage/SqliteProviderBootstrap.cs
         Storage/SqliteHistoryRepository.cs
         Storage/SqliteSchema.cs
         Storage/PngImageStore.cs
@@ -117,6 +118,8 @@ Run from the repository root:
     dotnet sln LocalClipboard.slnx add tests/LocalClipboard.App.IntegrationTests/LocalClipboard.App.IntegrationTests.csproj
 
 Expected: six projects appear in LocalClipboard.slnx: three product projects and three test projects.
+
+Keep the template-generated xunit test framework package at version 2.9.3 for Task 1. Do not introduce an xUnit v3 migration while scaffolding; if a future NuGet warning requires an upgrade, handle it as a separate scoped change instead of expanding this task.
 
 - [ ] **Step 3: Add project references and SQLite package**
 
@@ -683,9 +686,10 @@ Run:
 
 ### Task 4: Implement SQLite History Repository
 
-**Package and initialization note:** Infrastructure uses Microsoft.Data.Sqlite.Core 10.0.10 with SQLitePCLRaw.provider.winsqlite3 3.0.3 to bind the Windows system winsqlite3.dll instead of carrying the vulnerable bundled SQLitePCLRaw.lib.e_sqlite3 native library (NU1903 / GHSA-2m69-gcr7-jv3q). Before opening any SqliteConnection, Program must call `SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());` followed by `SQLitePCL.raw.FreezeProvider(true);`; do not replace provider initialization with audit suppression.
+**Package and initialization note:** Infrastructure uses Microsoft.Data.Sqlite.Core 10.0.10 with SQLitePCLRaw.provider.winsqlite3 3.0.3 to bind the Windows system winsqlite3.dll instead of carrying the vulnerable bundled SQLitePCLRaw.lib.e_sqlite3 native library (NU1903 / GHSA-2m69-gcr7-jv3q). Provider initialization belongs to Infrastructure through SqliteProviderBootstrap so production and test hosts follow the same path; Program must not call SQLitePCL provider APIs directly. Do not replace provider initialization with audit suppression.
 
 **Files:**
+- Create: src/LocalClipboard.Infrastructure/Storage/SqliteProviderBootstrap.cs
 - Create: src/LocalClipboard.Infrastructure/Storage/SqliteSchema.cs
 - Create: src/LocalClipboard.Infrastructure/Storage/SqliteHistoryRepository.cs
 - Test: tests/LocalClipboard.Infrastructure.Tests/Storage/SqliteHistoryRepositoryTests.cs
@@ -695,6 +699,8 @@ Run:
 Create SqliteHistoryRepositoryTests.cs. Each test creates a unique database under Path.Combine(Path.GetTempPath(), "LocalClipboardTests", Guid.NewGuid() + ".db") and deletes its parent directory in DisposeAsync.
 
 Add these tests:
+
+The tests construct and use SqliteHistoryRepository normally. Its connection-opening path automatically calls SqliteProviderBootstrap.EnsureInitialized, so no test-specific provider startup code is allowed or required.
 
     [Fact]
     public async Task InsertAndQuery_RoundTripsTextEntry()
@@ -757,7 +763,34 @@ Run:
 
 Expected: FAIL because SqliteHistoryRepository does not exist.
 
-- [ ] **Step 3: Create the schema initializer**
+- [ ] **Step 3: Create the provider bootstrap and schema initializer**
+
+Create SqliteProviderBootstrap.cs:
+
+    namespace LocalClipboard.Infrastructure.Storage;
+
+    internal static class SqliteProviderBootstrap
+    {
+        private static int initialized;
+
+        public static void EnsureInitialized()
+        {
+            if (Interlocked.Exchange(ref initialized, 1) != 0) return;
+
+            try
+            {
+                SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());
+                SQLitePCL.raw.FreezeProvider(true);
+            }
+            catch
+            {
+                Interlocked.Exchange(ref initialized, 0);
+                throw;
+            }
+        }
+    }
+
+Reset initialized to 0 before rethrowing if provider setup fails so a later repository open can retry instead of permanently observing a failed initialization attempt.
 
 Create SqliteSchema.cs:
 
@@ -814,7 +847,7 @@ Create SqliteHistoryRepository.cs with constructor SqliteHistoryRepository(strin
         Pooling = true
     }.ToString();
 
-Add a private OpenAsync method that opens a connection and calls SqliteSchema.EnsureCreatedAsync. Add this exact row mapper:
+Add a private OpenAsync method whose first operation is `SqliteProviderBootstrap.EnsureInitialized()` before constructing or opening any SqliteConnection. It then opens the connection and calls SqliteSchema.EnsureCreatedAsync. This repository-owned call is the single initialization path used by both production and Infrastructure tests. Add this exact row mapper:
 
     private static ClipboardEntry ReadEntry(SqliteDataReader reader) => new(
         Guid.Parse(reader.GetString(0)),
@@ -1738,7 +1771,7 @@ Catch background callback exceptions at the context boundary and send only event
 Program.Main must be marked STAThread and perform this order:
 
 1. ApplicationConfiguration.Initialize().
-2. Before any code can open a SqliteConnection, call `SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());` and then `SQLitePCL.raw.FreezeProvider(true);` so Microsoft.Data.Sqlite uses the Windows system winsqlite3.dll without a bundled e_sqlite3 native library.
+2. Do not call SQLitePCL provider APIs directly from Program. Provider setup is owned by SqliteProviderBootstrap and occurs automatically through the SqliteHistoryRepository construction/open path used below.
 3. Create AppPaths and RollingFileLogger.
 4. Build the per-user SingleInstanceCoordinator name from WindowsIdentity.GetCurrent().User.Value.
 5. If TryAcquirePrimary is false, call SendShowMessageAsync and return.
