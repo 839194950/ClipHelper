@@ -19,6 +19,8 @@ public sealed class PngImageStore : IImageStore
         rootPathWithSeparator = Path.EndsInDirectorySeparator(this.rootPath)
             ? this.rootPath
             : this.rootPath + Path.DirectorySeparatorChar;
+        Directory.CreateDirectory(ResolveRelativePath("images"));
+        Directory.CreateDirectory(ResolveRelativePath("thumbnails"));
     }
 
     public async Task<StoredImage> SaveAsync(

@@ -15,9 +15,18 @@ public sealed class PngImageStoreTests : IDisposable
     }
 
     [Fact]
+    public void Constructor_CreatesImageAndThumbnailDirectories()
+    {
+        _ = new PngImageStore(rootPath);
+
+        Assert.True(Directory.Exists(Path.Combine(rootPath, "images")));
+        Assert.True(Directory.Exists(Path.Combine(rootPath, "thumbnails")));
+    }
+
+    [Fact]
     public async Task SaveAsync_WritesOriginalAndBoundedThumbnail()
     {
-        byte[] png = CreatePng();
+        byte[] png = CreatePng(400, 200);
         Guid entryId = Guid.NewGuid();
         var store = new PngImageStore(rootPath);
 
@@ -32,8 +41,8 @@ public sealed class PngImageStoreTests : IDisposable
         Assert.True(File.Exists(ToAbsolutePath(result.ThumbnailPath)));
         Assert.Equal(png, await File.ReadAllBytesAsync(ToAbsolutePath(result.ImagePath)));
         using Image thumbnail = Image.FromFile(ToAbsolutePath(result.ThumbnailPath));
-        Assert.True(thumbnail.Width <= 320);
-        Assert.True(thumbnail.Height <= 220);
+        Assert.Equal(320, thumbnail.Width);
+        Assert.Equal(160, thumbnail.Height);
     }
 
     [Fact]
