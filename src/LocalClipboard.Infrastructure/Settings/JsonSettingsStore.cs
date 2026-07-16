@@ -52,8 +52,10 @@ public sealed class JsonSettingsStore
             if (!File.Exists(settingsPath)) return AppSettings.Default;
 
             string json = await File.ReadAllTextAsync(settingsPath, cancellationToken);
-            AppSettingsDto? settings = JsonSerializer.Deserialize<AppSettingsDto>(json);
-            return MergeWithDefaults(settings);
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                throw new JsonException("Settings JSON root must be an object.");
+            return ParseSettings(document.RootElement);
         }
         catch (JsonException)
         {
@@ -134,29 +136,79 @@ public sealed class JsonSettingsStore
         }
     }
 
-    private static AppSettings MergeWithDefaults(AppSettingsDto? settings)
+    private static AppSettings ParseSettings(JsonElement root)
     {
-        if (settings is null) return AppSettings.Default;
+        bool startWithWindows = AppSettings.Default.StartWithWindows;
+        if (root.TryGetProperty(nameof(AppSettings.StartWithWindows), out JsonElement startElement) &&
+            startElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            startWithWindows = startElement.GetBoolean();
 
-        const HotkeyModifiers allowedModifiers =
-            HotkeyModifiers.Alt |
-            HotkeyModifiers.Control |
-            HotkeyModifiers.Shift |
-            HotkeyModifiers.Windows;
-        HotkeyModifiers hotkeyModifiers = settings.HotkeyModifiers is uint rawModifiers &&
-            (rawModifiers & ~(uint)allowedModifiers) == 0
-                ? (HotkeyModifiers)rawModifiers
-                : AppSettings.Default.HotkeyModifiers;
-        Keys hotkeyKey = settings.HotkeyKey is int rawKey &&
-            rawKey != (int)Keys.None &&
-            Enum.IsDefined(typeof(Keys), rawKey)
-                ? (Keys)rawKey
-                : AppSettings.Default.HotkeyKey;
+        HotkeyModifiers hotkeyModifiers = ParseHotkeyModifiers(root);
+        Keys hotkeyKey = ParseHotkeyKey(root);
 
         return new AppSettings(
-            settings.StartWithWindows ?? AppSettings.Default.StartWithWindows,
+            startWithWindows,
             hotkeyModifiers,
             hotkeyKey);
+    }
+
+    private static HotkeyModifiers ParseHotkeyModifiers(JsonElement root)
+    {
+        const int allowedBits =
+            (int)(HotkeyModifiers.Alt |
+                HotkeyModifiers.Control |
+                HotkeyModifiers.Shift |
+                HotkeyModifiers.Windows);
+        if (!root.TryGetProperty(nameof(AppSettings.HotkeyModifiers), out JsonElement element) ||
+            element.ValueKind != JsonValueKind.Number ||
+            !element.TryGetInt32(out int rawModifiers) ||
+            rawModifiers < 0 ||
+            (rawModifiers & ~allowedBits) != 0)
+            return AppSettings.Default.HotkeyModifiers;
+
+        return (HotkeyModifiers)rawModifiers;
+    }
+
+    private static Keys ParseHotkeyKey(JsonElement root)
+    {
+        if (!root.TryGetProperty(nameof(AppSettings.HotkeyKey), out JsonElement element) ||
+            element.ValueKind != JsonValueKind.Number ||
+            !element.TryGetInt32(out int rawKey) ||
+            rawKey < 0)
+            return AppSettings.Default.HotkeyKey;
+
+        var rawKeys = (Keys)rawKey;
+        Keys keyCode = rawKeys & Keys.KeyCode;
+        return rawKeys == keyCode && IsUsableHotkeyKey(keyCode)
+            ? keyCode
+            : AppSettings.Default.HotkeyKey;
+    }
+
+    private static bool IsUsableHotkeyKey(Keys keyCode)
+    {
+        int value = (int)keyCode;
+        return value is (int)Keys.Back or
+            (int)Keys.Tab or
+            (int)Keys.Return or
+            (int)Keys.Pause or
+            (int)Keys.CapsLock or
+            (int)Keys.Escape or
+            (int)Keys.Space or
+            (int)Keys.NumLock or
+            (int)Keys.Scroll ||
+            value is >= (int)Keys.PageUp and <= (int)Keys.Delete ||
+            value is >= (int)Keys.D0 and <= (int)Keys.D9 ||
+            value is >= (int)Keys.A and <= (int)Keys.Z ||
+            value is >= (int)Keys.LWin and <= (int)Keys.Sleep ||
+            value is >= (int)Keys.NumPad0 and <= (int)Keys.Divide ||
+            value is >= (int)Keys.F1 and <= (int)Keys.F24 ||
+            value is >= (int)Keys.BrowserBack and <= (int)Keys.LaunchApplication2 ||
+            value is >= (int)Keys.OemSemicolon and <= (int)Keys.Oemtilde ||
+            value is >= (int)Keys.OemOpenBrackets and <= (int)Keys.OemBackslash ||
+            value is (int)Keys.Oem102 or
+            (int)Keys.ProcessKey or
+            (int)Keys.Packet ||
+            value is >= (int)Keys.Attn and <= (int)Keys.OemClear;
     }
 
     private AppSettings MoveInvalidSettingsToRecovery()
@@ -170,8 +222,4 @@ public sealed class JsonSettingsStore
         return AppSettings.Default;
     }
 
-    private sealed record AppSettingsDto(
-        bool? StartWithWindows,
-        uint? HotkeyModifiers,
-        int? HotkeyKey);
 }

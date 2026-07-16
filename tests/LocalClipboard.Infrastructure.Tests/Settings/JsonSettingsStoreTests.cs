@@ -16,6 +16,28 @@ public sealed class JsonSettingsStoreTests : IDisposable
 
     private string RecoveryDirectory => Path.Combine(rootPath, "recovery");
 
+    public static TheoryData<string> InvalidHotkeyKeyJsonValues => new()
+    {
+        ((int)Keys.Control).ToString(CultureInfo.InvariantCulture),
+        ((int)Keys.KeyCode).ToString(CultureInfo.InvariantCulture),
+        ((int)Keys.Modifiers).ToString(CultureInfo.InvariantCulture),
+        ((int)Keys.None).ToString(CultureInfo.InvariantCulture),
+        "999999",
+        JsonSerializer.Serialize("Space"),
+        "true",
+        "{}",
+    };
+
+    public static TheoryData<string> InvalidHotkeyModifierJsonValues => new()
+    {
+        "-1",
+        "16",
+        "4294967296",
+        JsonSerializer.Serialize("Control"),
+        "true",
+        "{}",
+    };
+
     public void Dispose()
     {
         if (Directory.Exists(rootPath)) Directory.Delete(rootPath, recursive: true);
@@ -62,12 +84,31 @@ public sealed class JsonSettingsStoreTests : IDisposable
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(999999)]
-    public async Task LoadAsync_InvalidHotkeyFieldsFallBackToDefaults(int hotkeyKey)
+    [MemberData(nameof(InvalidHotkeyKeyJsonValues))]
+    public async Task LoadAsync_InvalidHotkeyKeyFallsBackWithoutDiscardingValidFields(
+        string hotkeyKeyJson)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-        string json = $$"""{"StartWithWindows":false,"HotkeyModifiers":16,"HotkeyKey":{{hotkeyKey}}}""";
+        string json = $$"""{"StartWithWindows":false,"HotkeyModifiers":2,"HotkeyKey":{{hotkeyKeyJson}}}""";
+        await File.WriteAllTextAsync(SettingsPath, json);
+        var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+
+        AppSettings settings = await store.LoadAsync(default);
+
+        Assert.False(settings.StartWithWindows);
+        Assert.Equal(HotkeyModifiers.Control, settings.HotkeyModifiers);
+        Assert.Equal(Keys.V, settings.HotkeyKey);
+        Assert.True(File.Exists(SettingsPath));
+        Assert.False(Directory.Exists(RecoveryDirectory));
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidHotkeyModifierJsonValues))]
+    public async Task LoadAsync_InvalidHotkeyModifiersFallBackWithoutDiscardingValidFields(
+        string hotkeyModifiersJson)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        string json = $$"""{"StartWithWindows":false,"HotkeyModifiers":{{hotkeyModifiersJson}},"HotkeyKey":32}""";
         await File.WriteAllTextAsync(SettingsPath, json);
         var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
 
@@ -75,7 +116,28 @@ public sealed class JsonSettingsStoreTests : IDisposable
 
         Assert.False(settings.StartWithWindows);
         Assert.Equal(HotkeyModifiers.Alt, settings.HotkeyModifiers);
-        Assert.Equal(Keys.V, settings.HotkeyKey);
+        Assert.Equal(Keys.Space, settings.HotkeyKey);
+        Assert.True(File.Exists(SettingsPath));
+        Assert.False(Directory.Exists(RecoveryDirectory));
+    }
+
+    [Theory]
+    [InlineData((int)Keys.A)]
+    [InlineData((int)Keys.D7)]
+    [InlineData((int)Keys.F12)]
+    [InlineData((int)Keys.Space)]
+    public async Task LoadAsync_UsableHotkeyKeyCodesArePreserved(int hotkeyKey)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        string json = $$"""{"StartWithWindows":false,"HotkeyModifiers":2,"HotkeyKey":{{hotkeyKey}}}""";
+        await File.WriteAllTextAsync(SettingsPath, json);
+        var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+
+        AppSettings settings = await store.LoadAsync(default);
+
+        Assert.False(settings.StartWithWindows);
+        Assert.Equal(HotkeyModifiers.Control, settings.HotkeyModifiers);
+        Assert.Equal((Keys)hotkeyKey, settings.HotkeyKey);
     }
 
     [Fact]
@@ -103,6 +165,23 @@ public sealed class JsonSettingsStoreTests : IDisposable
             CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
         Assert.InRange(timestamp, beforeLoad, afterLoad);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("42")]
+    public async Task LoadAsync_NonObjectRootMovesFileToRecovery(string json)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        await File.WriteAllTextAsync(SettingsPath, json);
+        var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+
+        AppSettings settings = await store.LoadAsync(default);
+
+        Assert.Equal(AppSettings.Default, settings);
+        Assert.False(File.Exists(SettingsPath));
+        Assert.Single(Directory.GetFiles(RecoveryDirectory));
     }
 
     [Fact]
