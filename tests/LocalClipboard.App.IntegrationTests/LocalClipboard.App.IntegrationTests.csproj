@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\LocalClipboard.App\LocalClipboard.App.csproj" />
     <ProjectReference Include="..\..\src\LocalClipboard.Core\LocalClipboard.Core.csproj" />
     <ProjectReference Include="..\..\src\LocalClipboard.Infrastructure\LocalClipboard.Infrastructure.csproj" />
   </ItemGroup>
