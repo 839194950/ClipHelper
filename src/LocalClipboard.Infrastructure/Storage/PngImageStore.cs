@@ -9,6 +9,7 @@ public sealed class PngImageStore : IImageStore
 {
     private const int ThumbnailMaxWidth = 320;
     private const int ThumbnailMaxHeight = 220;
+    private static readonly SemaphoreSlim SaveGate = new(1, 1);
     private readonly string rootPath;
     private readonly string rootPathWithSeparator;
 
@@ -19,8 +20,11 @@ public sealed class PngImageStore : IImageStore
         rootPathWithSeparator = Path.EndsInDirectorySeparator(this.rootPath)
             ? this.rootPath
             : this.rootPath + Path.DirectorySeparatorChar;
-        Directory.CreateDirectory(ResolveRelativePath("images"));
-        Directory.CreateDirectory(ResolveRelativePath("thumbnails"));
+        Directory.CreateDirectory(this.rootPath);
+        EnsureDirectoryIsSafe(this.rootPath);
+        Directory.CreateDirectory(Path.Combine(this.rootPath, "images"));
+        Directory.CreateDirectory(Path.Combine(this.rootPath, "thumbnails"));
+        ValidateStorageDirectories();
     }
 
     public async Task<StoredImage> SaveAsync(
@@ -34,30 +38,42 @@ public sealed class PngImageStore : IImageStore
         ValidateHash(hash);
         ArgumentNullException.ThrowIfNull(pngBytes);
         cancellationToken.ThrowIfCancellationRequested();
+        ValidateStorageDirectories();
 
         string baseName = $"{entryId:N}-{hash[..12]}";
         string imagePath = $"images/{baseName}.png";
         string thumbnailPath = $"thumbnails/{baseName}.png";
         string imageDestination = ResolveRelativePath(imagePath);
         string thumbnailDestination = ResolveRelativePath(thumbnailPath);
-        string imageTemp = ResolveRelativePath($"images/{baseName}.tmp");
-        string thumbnailTemp = ResolveRelativePath($"thumbnails/{baseName}.tmp");
-        bool imageMoved = false;
-        bool thumbnailMoved = false;
+        string nonce = Guid.NewGuid().ToString("N");
+        string imageTemp = ResolveRelativePath($"images/{baseName}-{nonce}.tmp");
+        string thumbnailTemp = ResolveRelativePath($"thumbnails/{baseName}-{nonce}.tmp");
+        bool imageCreated = false;
+        bool thumbnailCreated = false;
 
-        Directory.CreateDirectory(Path.GetDirectoryName(imageDestination)!);
-        Directory.CreateDirectory(Path.GetDirectoryName(thumbnailDestination)!);
+        await SaveGate.WaitAsync(cancellationToken);
 
         try
         {
-            await File.WriteAllBytesAsync(imageTemp, pngBytes, cancellationToken);
-
+            ValidateStorageDirectories();
             using var sourceStream = new MemoryStream(pngBytes, writable: false);
             using Image source = Image.FromStream(sourceStream, useEmbeddedColorManagement: false, validateImageData: true);
             if (source.RawFormat.Guid != ImageFormat.Png.Guid)
                 throw new ArgumentException("Image data must be PNG encoded.", nameof(pngBytes));
 
-            (int thumbnailWidth, int thumbnailHeight) = GetThumbnailSize(source.Width, source.Height);
+            ValidateDimensions(width, height, source.Width, source.Height);
+            int actualWidth = source.Width;
+            int actualHeight = source.Height;
+            bool imageExists = File.Exists(imageDestination);
+            bool thumbnailExists = File.Exists(thumbnailDestination);
+            if (imageExists && thumbnailExists)
+                return new StoredImage(imagePath, thumbnailPath, actualWidth, actualHeight, pngBytes.LongLength);
+            if (imageExists || thumbnailExists)
+                throw new IOException($"Stored image pair is incomplete for '{baseName}'.");
+
+            await File.WriteAllBytesAsync(imageTemp, pngBytes, cancellationToken);
+
+            (int thumbnailWidth, int thumbnailHeight) = GetThumbnailSize(actualWidth, actualHeight);
             using var thumbnail = new Bitmap(thumbnailWidth, thumbnailHeight, PixelFormat.Format32bppArgb);
             using (Graphics graphics = Graphics.FromImage(thumbnail))
             {
@@ -68,25 +84,30 @@ public sealed class PngImageStore : IImageStore
             thumbnail.Save(thumbnailTemp, ImageFormat.Png);
             cancellationToken.ThrowIfCancellationRequested();
 
-            File.Move(imageTemp, imageDestination, overwrite: true);
-            imageMoved = true;
-            File.Move(thumbnailTemp, thumbnailDestination, overwrite: true);
-            thumbnailMoved = true;
+            File.Move(imageTemp, imageDestination, overwrite: false);
+            imageCreated = true;
+            File.Move(thumbnailTemp, thumbnailDestination, overwrite: false);
+            thumbnailCreated = true;
 
-            return new StoredImage(imagePath, thumbnailPath, width, height, pngBytes.LongLength);
+            return new StoredImage(imagePath, thumbnailPath, actualWidth, actualHeight, pngBytes.LongLength);
         }
         catch
         {
             TryDeleteFile(imageTemp);
             TryDeleteFile(thumbnailTemp);
-            if (imageMoved) TryDeleteFile(imageDestination);
-            if (thumbnailMoved) TryDeleteFile(thumbnailDestination);
+            if (imageCreated) TryDeleteFile(imageDestination);
+            if (thumbnailCreated) TryDeleteFile(thumbnailDestination);
             throw;
+        }
+        finally
+        {
+            SaveGate.Release();
         }
     }
 
     public Task DeleteAsync(string? imagePath, string? thumbnailPath, CancellationToken cancellationToken)
     {
+        ValidateStorageDirectories();
         List<string> resolvedPaths = [];
         foreach (string? relativePath in new[] { imagePath, thumbnailPath })
         {
@@ -94,7 +115,12 @@ public sealed class PngImageStore : IImageStore
             if (relativePath is not null) resolvedPaths.Add(ResolveRelativePath(relativePath));
         }
 
-        foreach (string resolvedPath in resolvedPaths) File.Delete(resolvedPath);
+        foreach (string resolvedPath in resolvedPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureExistingDirectoryComponentsAreSafe(resolvedPath);
+            File.Delete(resolvedPath);
+        }
 
         return Task.CompletedTask;
     }
@@ -103,6 +129,7 @@ public sealed class PngImageStore : IImageStore
     {
         ArgumentNullException.ThrowIfNull(referencedPaths);
         cancellationToken.ThrowIfCancellationRequested();
+        ValidateStorageDirectories();
         var normalizedReferences = new HashSet<string>(
             referencedPaths.Select(NormalizeRelativePath),
             StringComparer.OrdinalIgnoreCase);
@@ -116,7 +143,11 @@ public sealed class PngImageStore : IImageStore
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 string relativePath = NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath));
-                if (!normalizedReferences.Contains(relativePath)) File.Delete(filePath);
+                if (!normalizedReferences.Contains(relativePath))
+                {
+                    EnsureExistingDirectoryComponentsAreSafe(filePath);
+                    File.Delete(filePath);
+                }
             }
         }
 
@@ -137,7 +168,38 @@ public sealed class PngImageStore : IImageStore
         if (!resolvedPath.StartsWith(rootPathWithSeparator, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Path resolves outside the image store root.", nameof(relativePath));
 
+        EnsureExistingDirectoryComponentsAreSafe(resolvedPath);
         return resolvedPath;
+    }
+
+    private void ValidateStorageDirectories()
+    {
+        EnsureDirectoryIsSafe(rootPath);
+        EnsureDirectoryIsSafe(Path.Combine(rootPath, "images"));
+        EnsureDirectoryIsSafe(Path.Combine(rootPath, "thumbnails"));
+    }
+
+    private void EnsureExistingDirectoryComponentsAreSafe(string resolvedPath)
+    {
+        EnsureDirectoryIsSafe(rootPath);
+        string relativePath = Path.GetRelativePath(rootPath, resolvedPath);
+        if (relativePath == ".") return;
+
+        string currentPath = rootPath;
+        foreach (string segment in relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            currentPath = Path.Combine(currentPath, segment);
+            if (!Directory.Exists(currentPath)) break;
+            EnsureDirectoryIsSafe(currentPath);
+        }
+    }
+
+    private static void EnsureDirectoryIsSafe(string directoryPath)
+    {
+        if (!Directory.Exists(directoryPath))
+            throw new DirectoryNotFoundException($"Required image storage directory was not found: '{directoryPath}'.");
+        if ((File.GetAttributes(directoryPath) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException($"Image storage directories must not be reparse points: '{directoryPath}'.");
     }
 
     private static (int Width, int Height) GetThumbnailSize(int width, int height)
@@ -146,6 +208,15 @@ public sealed class PngImageStore : IImageStore
         int scaledWidth = Math.Max(1, Math.Min(ThumbnailMaxWidth, (int)Math.Round(width * scale)));
         int scaledHeight = Math.Max(1, Math.Min(ThumbnailMaxHeight, (int)Math.Round(height * scale)));
         return (scaledWidth, scaledHeight);
+    }
+
+    private static void ValidateDimensions(int width, int height, int actualWidth, int actualHeight)
+    {
+        if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width), width, "Width must be positive.");
+        if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height), height, "Height must be positive.");
+        if (width != actualWidth || height != actualHeight)
+            throw new ArgumentException(
+                $"Declared dimensions {width}x{height} do not match decoded PNG dimensions {actualWidth}x{actualHeight}.");
     }
 
     private static string NormalizeRelativePath(string relativePath) => relativePath.Replace('\\', '/');
