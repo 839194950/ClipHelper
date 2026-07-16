@@ -6,13 +6,24 @@ public sealed class JsonSettingsStore
 {
     private readonly string settingsPath;
     private readonly string recoveryDirectory;
+    private readonly Action<string> deleteFile;
 
     public JsonSettingsStore(string settingsPath, string recoveryDirectory)
+        : this(settingsPath, recoveryDirectory, File.Delete)
+    {
+    }
+
+    internal JsonSettingsStore(
+        string settingsPath,
+        string recoveryDirectory,
+        Action<string> deleteFile)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(settingsPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(recoveryDirectory);
+        ArgumentNullException.ThrowIfNull(deleteFile);
         this.settingsPath = settingsPath;
         this.recoveryDirectory = recoveryDirectory;
+        this.deleteFile = deleteFile;
     }
 
     public async Task<AppSettings> LoadAsync(CancellationToken cancellationToken)
@@ -65,16 +76,7 @@ public sealed class JsonSettingsStore
         }
         catch
         {
-            if (ownsTemporaryFile)
-            {
-                try
-                {
-                    File.Delete(temporaryPath);
-                }
-                catch
-                {
-                }
-            }
+            if (ownsTemporaryFile && File.Exists(temporaryPath)) deleteFile(temporaryPath);
 
             throw;
         }
@@ -83,14 +85,9 @@ public sealed class JsonSettingsStore
     private AppSettings MoveInvalidSettingsToRecovery()
     {
         Directory.CreateDirectory(recoveryDirectory);
-        string recoveryPath;
-        do
-        {
-            recoveryPath = Path.Combine(
-                recoveryDirectory,
-                $"settings-{DateTime.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}.invalid.json");
-        }
-        while (File.Exists(recoveryPath));
+        string recoveryPath = Path.Combine(
+            recoveryDirectory,
+            $"settings-{DateTime.UtcNow:yyyyMMdd-HHmmssfffffff}.invalid.json");
 
         File.Move(settingsPath, recoveryPath);
         return AppSettings.Default;

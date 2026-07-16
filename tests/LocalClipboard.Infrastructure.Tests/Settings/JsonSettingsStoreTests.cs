@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Windows.Forms;
 using LocalClipboard.Infrastructure.Settings;
 
@@ -50,12 +51,25 @@ public sealed class JsonSettingsStoreTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
         await File.WriteAllTextAsync(SettingsPath, "{ invalid json");
         var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+        DateTime beforeLoad = DateTime.UtcNow;
 
         AppSettings settings = await store.LoadAsync(default);
 
+        DateTime afterLoad = DateTime.UtcNow;
         Assert.Equal(AppSettings.Default, settings);
         Assert.False(File.Exists(SettingsPath));
-        Assert.Single(Directory.GetFiles(RecoveryDirectory, "settings-*.invalid.json"));
+        string recoveryFile = Assert.Single(Directory.GetFiles(RecoveryDirectory));
+        string recoveryFileName = Path.GetFileName(recoveryFile);
+        Assert.Matches(
+            @"^settings-\d{8}-\d{13}\.invalid\.json$",
+            recoveryFileName);
+        string timestampText = recoveryFileName["settings-".Length..^".invalid.json".Length];
+        DateTime timestamp = DateTime.ParseExact(
+            timestampText,
+            "yyyyMMdd-HHmmssfffffff",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+        Assert.InRange(timestamp, beforeLoad, afterLoad);
     }
 
     [Fact]
@@ -87,17 +101,23 @@ public sealed class JsonSettingsStoreTests : IDisposable
         Assert.Equal(existingTemporaryContent, await File.ReadAllTextAsync(SettingsPath + ".tmp"));
     }
 
-    [Fact]
-    public async Task LoadAsync_ConsecutiveInvalidFilesUseDistinctRecoveryNames()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SaveAsync_WhenCleanupFails_PropagatesCleanupIoException(bool unauthorized)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-        var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+        Directory.CreateDirectory(SettingsPath);
+        Exception expected = unauthorized
+            ? new UnauthorizedAccessException("cleanup denied")
+            : new IOException("cleanup failed");
+        var store = new JsonSettingsStore(
+            SettingsPath,
+            RecoveryDirectory,
+            _ => throw expected);
 
-        await File.WriteAllTextAsync(SettingsPath, "invalid one");
-        await store.LoadAsync(default);
-        await File.WriteAllTextAsync(SettingsPath, "invalid two");
-        await store.LoadAsync(default);
+        Exception actual = await Assert.ThrowsAnyAsync<Exception>(() =>
+            store.SaveAsync(AppSettings.Default, default));
 
-        Assert.Equal(2, Directory.GetFiles(RecoveryDirectory, "settings-*.invalid.json").Length);
+        Assert.Same(expected, actual);
     }
 }
