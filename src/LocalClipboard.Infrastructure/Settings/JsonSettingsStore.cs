@@ -179,36 +179,22 @@ public sealed class JsonSettingsStore
 
         var rawKeys = (Keys)rawKey;
         Keys keyCode = rawKeys & Keys.KeyCode;
-        return rawKeys == keyCode && IsUsableHotkeyKey(keyCode)
+        return IsUsableHotkeyKey(rawKeys, keyCode)
             ? keyCode
             : AppSettings.Default.HotkeyKey;
     }
 
-    private static bool IsUsableHotkeyKey(Keys keyCode)
+    private static bool IsUsableHotkeyKey(Keys rawKeys, Keys keyCode)
     {
-        int value = (int)keyCode;
-        return value is (int)Keys.Back or
-            (int)Keys.Tab or
-            (int)Keys.Return or
-            (int)Keys.Pause or
-            (int)Keys.CapsLock or
-            (int)Keys.Escape or
-            (int)Keys.Space or
-            (int)Keys.NumLock or
-            (int)Keys.Scroll ||
-            value is >= (int)Keys.PageUp and <= (int)Keys.Delete ||
-            value is >= (int)Keys.D0 and <= (int)Keys.D9 ||
-            value is >= (int)Keys.A and <= (int)Keys.Z ||
-            value is >= (int)Keys.LWin and <= (int)Keys.Sleep ||
-            value is >= (int)Keys.NumPad0 and <= (int)Keys.Divide ||
-            value is >= (int)Keys.F1 and <= (int)Keys.F24 ||
-            value is >= (int)Keys.BrowserBack and <= (int)Keys.LaunchApplication2 ||
-            value is >= (int)Keys.OemSemicolon and <= (int)Keys.Oemtilde ||
-            value is >= (int)Keys.OemOpenBrackets and <= (int)Keys.OemBackslash ||
-            value is (int)Keys.Oem102 or
-            (int)Keys.ProcessKey or
-            (int)Keys.Packet ||
-            value is >= (int)Keys.Attn and <= (int)Keys.OemClear;
+        if ((rawKeys & Keys.Modifiers) != Keys.None || keyCode == Keys.None)
+            return false;
+        if (!Enum.IsDefined(typeof(Keys), keyCode)) return false;
+
+        return rawKeys is not Keys.KeyCode and
+            not Keys.Modifiers and
+            not Keys.Shift and
+            not Keys.Control and
+            not Keys.Alt;
     }
 
     private AppSettings MoveInvalidSettingsToRecovery()

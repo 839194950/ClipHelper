@@ -22,6 +22,8 @@ public sealed class JsonSettingsStoreTests : IDisposable
         ((int)Keys.KeyCode).ToString(CultureInfo.InvariantCulture),
         ((int)Keys.Modifiers).ToString(CultureInfo.InvariantCulture),
         ((int)Keys.None).ToString(CultureInfo.InvariantCulture),
+        "94",
+        "224",
         "999999",
         JsonSerializer.Serialize("Space"),
         "true",
@@ -123,8 +125,10 @@ public sealed class JsonSettingsStoreTests : IDisposable
 
     [Theory]
     [InlineData((int)Keys.A)]
+    [InlineData((int)Keys.Clear)]
     [InlineData((int)Keys.D7)]
     [InlineData((int)Keys.F12)]
+    [InlineData((int)Keys.Help)]
     [InlineData((int)Keys.Space)]
     public async Task LoadAsync_UsableHotkeyKeyCodesArePreserved(int hotkeyKey)
     {
