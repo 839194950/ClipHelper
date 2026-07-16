@@ -105,7 +105,7 @@ public sealed class SqliteHistoryRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Repository_AutomaticallyInitializesProviderUnderConcurrency()
+    public async Task MultipleRepositories_OpenSuccessfully()
     {
         SqliteHistoryRepository[] repositories = Enumerable.Range(0, 16)
             .Select(index => new SqliteHistoryRepository(Path.Combine(testDirectory, index.ToString(), "history.db")))
