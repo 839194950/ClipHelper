@@ -48,6 +48,57 @@ public sealed class RetryableOneTimeInitializerTests
     }
 
     [Fact]
+    public async Task EnsureInitialized_ConcurrentFailureIsSharedBeforeRetry()
+    {
+        RetryableOneTimeInitializer initializer = new();
+        InvalidOperationException expected = new("initialization failed");
+        using CountdownEvent ready = new(8);
+        using CountdownEvent calling = new(8);
+        using ManualResetEventSlim start = new(false);
+        using ManualResetEventSlim initializerEntered = new(false);
+        using ManualResetEventSlim releaseInitializer = new(false);
+        int initializerCount = 0;
+
+        Task[] tasks = Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+        {
+            ready.Signal();
+            start.Wait();
+            calling.Signal();
+            initializer.EnsureInitialized(() =>
+            {
+                Interlocked.Increment(ref initializerCount);
+                initializerEntered.Set();
+                releaseInitializer.Wait();
+                throw expected;
+            });
+        })).ToArray();
+
+        Assert.True(ready.Wait(TimeSpan.FromSeconds(5)));
+        start.Set();
+        Assert.True(calling.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(initializerEntered.Wait(TimeSpan.FromSeconds(5)));
+
+        try
+        {
+            Assert.Equal(1, Volatile.Read(ref initializerCount));
+            Assert.All(tasks, task => Assert.False(task.IsCompleted));
+        }
+        finally
+        {
+            releaseInitializer.Set();
+        }
+
+        InvalidOperationException[] failures = await Task.WhenAll(tasks.Select(task =>
+            Assert.ThrowsAsync<InvalidOperationException>(() => task)));
+        Assert.All(failures, failure => Assert.Same(expected, failure));
+        Assert.Equal(1, Volatile.Read(ref initializerCount));
+
+        initializer.EnsureInitialized(() => Interlocked.Increment(ref initializerCount));
+        initializer.EnsureInitialized(() => Interlocked.Increment(ref initializerCount));
+        Assert.Equal(2, Volatile.Read(ref initializerCount));
+    }
+
+    [Fact]
     public void EnsureInitialized_FailedAttemptCanBeRetried()
     {
         RetryableOneTimeInitializer initializer = new();

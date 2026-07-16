@@ -50,9 +50,9 @@ internal sealed class RetryableOneTimeInitializer
             lock (syncRoot)
             {
                 currentAttempt = null;
+                attempt.Completion.SetResult(false);
             }
 
-            attempt.Completion.SetResult(false);
             throw;
         }
 
@@ -60,9 +60,8 @@ internal sealed class RetryableOneTimeInitializer
         {
             Volatile.Write(ref initialized, true);
             currentAttempt = null;
+            attempt.Completion.SetResult(true);
         }
-
-        attempt.Completion.SetResult(true);
     }
 }
 

@@ -90,6 +90,30 @@ public sealed class SqliteHistoryRepositoryTests : IAsyncLifetime
         Assert.Equal(middle.Id, Assert.Single(result).Id);
     }
 
+    [Fact]
+    public async Task Repository_OrdersTimestampsByInstantAcrossOffsets()
+    {
+        DateTimeOffset lexicallyLaterButOlder = new(2026, 7, 15, 10, 0, 0, TimeSpan.FromHours(14));
+        DateTimeOffset lexicallyEarlierButNewer = new(2026, 7, 15, 9, 30, 0, TimeSpan.FromHours(-10));
+        ClipboardEntry older = TestEntry.Text("older", lexicallyLaterButOlder);
+        ClipboardEntry newer = TestEntry.Text("newer", lexicallyEarlierButNewer);
+        await repository.InsertAsync(older, CancellationToken.None);
+        await repository.InsertAsync(newer, CancellationToken.None);
+
+        Assert.Equal(newer.Id, (await repository.GetLatestAsync(CancellationToken.None))!.Id);
+        Assert.Equal(
+            new[] { newer.Id, older.Id },
+            (await repository.QueryAsync(new HistoryQuery(), CancellationToken.None)).Select(entry => entry.Id));
+
+        DateTimeOffset touchedNewest = new(2026, 7, 15, 8, 0, 0, TimeSpan.FromHours(-12));
+        await repository.TouchAsync(older.Id, touchedNewest, CancellationToken.None);
+
+        Assert.Equal(older.Id, (await repository.GetLatestAsync(CancellationToken.None))!.Id);
+        Assert.Equal(
+            new[] { older.Id, newer.Id },
+            (await repository.QueryAsync(new HistoryQuery(), CancellationToken.None)).Select(entry => entry.Id));
+    }
+
     [Theory]
     [InlineData("%", "literal % value", "literal wildcard value")]
     [InlineData("_", "literal _ value", "literal x value")]

@@ -12,11 +12,12 @@ public sealed class SqliteHistoryRepository : IHistoryRepository
 
     public SqliteHistoryRepository(string databasePath)
     {
-        string? directory = Path.GetDirectoryName(Path.GetFullPath(databasePath));
+        string fullDatabasePath = Path.GetFullPath(databasePath);
+        string? directory = Path.GetDirectoryName(fullDatabasePath);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         connectionString = new SqliteConnectionStringBuilder
         {
-            DataSource = databasePath,
+            DataSource = fullDatabasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Cache = SqliteCacheMode.Shared,
             Pooling = true
@@ -126,7 +127,7 @@ public sealed class SqliteHistoryRepository : IHistoryRepository
         command.Parameters.AddWithValue("$text", (object?)entry.TextContent ?? DBNull.Value); command.Parameters.AddWithValue("$hash", entry.ContentHash);
         command.Parameters.AddWithValue("$image", (object?)entry.ImagePath ?? DBNull.Value); command.Parameters.AddWithValue("$thumbnail", (object?)entry.ThumbnailPath ?? DBNull.Value);
         command.Parameters.AddWithValue("$width", entry.Width); command.Parameters.AddWithValue("$height", entry.Height); command.Parameters.AddWithValue("$size", entry.EncodedSize);
-        command.Parameters.AddWithValue("$created", entry.CreatedAt.ToString("O", CultureInfo.InvariantCulture)); command.Parameters.AddWithValue("$used", entry.LastUsedAt.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$created", SerializeTimestamp(entry.CreatedAt)); command.Parameters.AddWithValue("$used", SerializeTimestamp(entry.LastUsedAt));
         command.Parameters.AddWithValue("$favorite", entry.IsFavorite ? 1 : 0);
     }
 
@@ -135,10 +136,12 @@ public sealed class SqliteHistoryRepository : IHistoryRepository
         await using SqliteConnection connection = await OpenAsync(cancellationToken);
         await using SqliteCommand command = connection.CreateCommand(); command.CommandText = sql;
         command.Parameters.AddWithValue("$id", id.ToString());
-        if (sql.Contains("$used", StringComparison.Ordinal)) command.Parameters.AddWithValue("$used", ((DateTimeOffset)value!).ToString("O", CultureInfo.InvariantCulture));
+        if (sql.Contains("$used", StringComparison.Ordinal)) command.Parameters.AddWithValue("$used", SerializeTimestamp((DateTimeOffset)value!));
         if (sql.Contains("$favorite", StringComparison.Ordinal)) command.Parameters.AddWithValue("$favorite", (bool)value! ? 1 : 0);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static string EscapeLike(string value) => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal);
+
+    private static string SerializeTimestamp(DateTimeOffset value) => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 }
