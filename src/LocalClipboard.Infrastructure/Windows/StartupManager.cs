@@ -20,16 +20,16 @@ public sealed class StartupManager
     public void SetEnabled(string executablePath, bool enabled)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
-        using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
-            ?? throw new InvalidOperationException("Unable to open the current user's startup registry key.");
-
         if (enabled)
         {
+            using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
+                ?? throw new InvalidOperationException("Unable to open the current user's startup registry key.");
             key.SetValue(ValueName, Quote(executablePath), RegistryValueKind.String);
         }
         else
         {
-            key.DeleteValue(ValueName, throwOnMissingValue: false);
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            key?.DeleteValue(ValueName, throwOnMissingValue: false);
         }
     }
 

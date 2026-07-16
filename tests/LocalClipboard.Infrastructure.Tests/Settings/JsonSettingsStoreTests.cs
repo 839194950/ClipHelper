@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Windows.Forms;
 using LocalClipboard.Infrastructure.Settings;
 
@@ -43,6 +44,38 @@ public sealed class JsonSettingsStoreTests : IDisposable
 
         Assert.Equal(expected, await store.LoadAsync(default));
         Assert.False(File.Exists(SettingsPath + ".tmp"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_MergesMissingFieldsWithDefaults()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        await File.WriteAllTextAsync(SettingsPath, """{"StartWithWindows":true}""");
+        var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+
+        AppSettings settings = await store.LoadAsync(default);
+
+        Assert.Equal(AppSettings.Default, settings);
+        Assert.Empty(Directory.Exists(RecoveryDirectory)
+            ? Directory.GetFiles(RecoveryDirectory)
+            : []);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(999999)]
+    public async Task LoadAsync_InvalidHotkeyFieldsFallBackToDefaults(int hotkeyKey)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        string json = $$"""{"StartWithWindows":false,"HotkeyModifiers":16,"HotkeyKey":{{hotkeyKey}}}""";
+        await File.WriteAllTextAsync(SettingsPath, json);
+        var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+
+        AppSettings settings = await store.LoadAsync(default);
+
+        Assert.False(settings.StartWithWindows);
+        Assert.Equal(HotkeyModifiers.Alt, settings.HotkeyModifiers);
+        Assert.Equal(Keys.V, settings.HotkeyKey);
     }
 
     [Fact]
@@ -101,23 +134,126 @@ public sealed class JsonSettingsStoreTests : IDisposable
         Assert.Equal(existingTemporaryContent, await File.ReadAllTextAsync(SettingsPath + ".tmp"));
     }
 
+    [Fact]
+    public async Task LoadAsync_InvalidRecoveryCannotMoveAConcurrentSuccessfulSave()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        const string invalidJson = "{ invalid json";
+        await File.WriteAllTextAsync(SettingsPath, invalidJson);
+        var invalidRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRecovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var saveReachedLock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? pendingSaveLock = null;
+        var loadingStore = new JsonSettingsStore(
+            SettingsPath,
+            RecoveryDirectory,
+            File.Delete,
+            beforeRecovery: _ =>
+            {
+                invalidRead.TrySetResult();
+                return allowRecovery.Task;
+            });
+        var savingStore = new JsonSettingsStore(
+            Path.GetFullPath(SettingsPath),
+            RecoveryDirectory,
+            File.Delete,
+            lockWaitStarted: waitTask =>
+            {
+                pendingSaveLock = waitTask;
+                saveReachedLock.TrySetResult();
+            });
+        var expected = new AppSettings(false, HotkeyModifiers.Control, Keys.Space);
+
+        Task<AppSettings> loadTask = loadingStore.LoadAsync(default);
+        await invalidRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task saveTask = savingStore.SaveAsync(expected, default);
+
+        try
+        {
+            await saveReachedLock.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(pendingSaveLock);
+            Assert.False(pendingSaveLock.IsCompleted);
+        }
+        finally
+        {
+            allowRecovery.TrySetResult();
+        }
+
+        Assert.Equal(AppSettings.Default, await loadTask);
+        await saveTask;
+        Assert.Equal(expected, await new JsonSettingsStore(SettingsPath, RecoveryDirectory).LoadAsync(default));
+        string recoveredFile = Assert.Single(Directory.GetFiles(RecoveryDirectory));
+        Assert.Equal(invalidJson, await File.ReadAllTextAsync(recoveredFile));
+    }
+
+    [Fact]
+    public async Task SaveAsync_ConcurrentStoresShareFixedTemporaryFileSafely()
+    {
+        string alternatePath = Path.Combine(
+            Path.GetDirectoryName(SettingsPath)!,
+            ".",
+            Path.GetFileName(SettingsPath));
+        AppSettings[] candidates = Enumerable.Range(0, 100)
+            .Select(index => new AppSettings(
+                index % 2 == 0,
+                index % 3 == 0 ? HotkeyModifiers.Control : HotkeyModifiers.Shift,
+                index % 5 == 0 ? Keys.Space : Keys.V))
+            .ToArray();
+
+        Task[] saves = candidates
+            .Select((settings, index) => new JsonSettingsStore(
+                    index % 2 == 0 ? SettingsPath : alternatePath,
+                    RecoveryDirectory)
+                .SaveAsync(settings, default))
+            .ToArray();
+
+        await Task.WhenAll(saves);
+
+        string json = await File.ReadAllTextAsync(SettingsPath);
+        AppSettings? saved = JsonSerializer.Deserialize<AppSettings>(json);
+        Assert.NotNull(saved);
+        Assert.Contains(saved, candidates);
+        Assert.False(File.Exists(SettingsPath + ".tmp"));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task SaveAsync_WhenCleanupFails_PropagatesCleanupIoException(bool unauthorized)
+    public async Task SaveAsync_WhenCleanupFails_AggregatesSaveAndCleanupIoExceptions(bool unauthorized)
     {
         Directory.CreateDirectory(SettingsPath);
-        Exception expected = unauthorized
+        Exception cleanupFailure = unauthorized
             ? new UnauthorizedAccessException("cleanup denied")
             : new IOException("cleanup failed");
         var store = new JsonSettingsStore(
             SettingsPath,
             RecoveryDirectory,
-            _ => throw expected);
+            _ => throw cleanupFailure);
 
-        Exception actual = await Assert.ThrowsAnyAsync<Exception>(() =>
+        AggregateException aggregate = await Assert.ThrowsAsync<AggregateException>(() =>
             store.SaveAsync(AppSettings.Default, default));
 
-        Assert.Same(expected, actual);
+        Assert.Contains(cleanupFailure, aggregate.InnerExceptions);
+        Assert.Contains(aggregate.InnerExceptions, exception =>
+            exception is IOException or UnauthorizedAccessException &&
+            !ReferenceEquals(exception, cleanupFailure));
+    }
+
+    [Fact]
+    public async Task SaveAsync_WhenCanceledAndCleanupFails_AggregatesBothExceptions()
+    {
+        var cancellationFailure = new OperationCanceledException("save canceled");
+        var cleanupFailure = new IOException("cleanup failed");
+        var store = new JsonSettingsStore(
+            SettingsPath,
+            RecoveryDirectory,
+            _ => throw cleanupFailure,
+            afterTemporaryFileCreated: _ => throw cancellationFailure);
+
+        AggregateException aggregate = await Assert.ThrowsAsync<AggregateException>(() =>
+            store.SaveAsync(AppSettings.Default, default));
+
+        Assert.Contains(cancellationFailure, aggregate.InnerExceptions);
+        Assert.Contains(cleanupFailure, aggregate.InnerExceptions);
     }
 }
