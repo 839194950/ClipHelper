@@ -77,6 +77,10 @@ public sealed class HistoryService
     }
 
     public Task<IReadOnlyList<ClipboardEntry>> QueryAsync(HistoryQuery query, CancellationToken cancellationToken) => repository.QueryAsync(query, cancellationToken);
+
+    public Task MarkUsedAsync(Guid id, DateTimeOffset usedAt, CancellationToken cancellationToken) =>
+        repository.TouchAsync(id, usedAt, cancellationToken);
+
     public async Task SetFavoriteAsync(Guid id, bool isFavorite, CancellationToken cancellationToken)
     {
         await mutationGate.WaitAsync(cancellationToken);

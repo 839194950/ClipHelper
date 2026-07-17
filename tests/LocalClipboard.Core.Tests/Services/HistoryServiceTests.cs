@@ -229,6 +229,40 @@ public sealed class HistoryServiceTests
     }
 
     [Fact]
+    public async Task MarkUsedAsync_UpdatesLastUsedTime()
+    {
+        var repository = new FakeHistoryRepository();
+        var service = CreateService(repository);
+        ClipboardEntry entry = await service.CaptureAsync(
+            new ClipboardCapture(ClipboardContentType.Text, "value", null, 0, 0, Now),
+            CancellationToken.None) ?? throw new Xunit.Sdk.XunitException("Capture returned null.");
+
+        await service.MarkUsedAsync(entry.Id, Now.AddMinutes(1), CancellationToken.None);
+
+        Assert.Equal(Now.AddMinutes(1), repository.Entries.Single().LastUsedAt);
+    }
+
+    [Fact]
+    public async Task ClearAsync_DeletesImageFilesAndProtectsFavorites()
+    {
+        var repository = new FakeHistoryRepository();
+        var imageStore = new FakeImageStore();
+        var service = CreateService(repository, imageStore);
+        ClipboardEntry ordinaryImage = await service.CaptureAsync(
+            new ClipboardCapture(ClipboardContentType.Image, null, [1], 1, 1, Now),
+            CancellationToken.None) ?? throw new Xunit.Sdk.XunitException("Image capture returned null.");
+        ClipboardEntry favoriteText = await service.CaptureAsync(
+            new ClipboardCapture(ClipboardContentType.Text, "favorite", null, 0, 0, Now.AddSeconds(1)),
+            CancellationToken.None) ?? throw new Xunit.Sdk.XunitException("Text capture returned null.");
+        await service.SetFavoriteAsync(favoriteText.Id, true, CancellationToken.None);
+
+        await service.ClearAsync(includeFavorites: false, CancellationToken.None);
+
+        Assert.Equal(favoriteText.Id, Assert.Single(repository.Entries).Id);
+        Assert.Contains(imageStore.DeletedImages, item => item.ImagePath == ordinaryImage.ImagePath);
+    }
+
+    [Fact]
     public async Task ClearAsync_IncludeFavoritesControlsWhichImagesAndRecordsAreCleared()
     {
         var repository = new FakeHistoryRepository();

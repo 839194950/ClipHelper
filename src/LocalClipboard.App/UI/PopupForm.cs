@@ -1,11 +1,17 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using LocalClipboard.Core.Models;
 
 namespace LocalClipboard.App.UI;
 
 internal sealed class PopupForm : Form
 {
-    private const string FooterText = "↑↓ 选择  Enter 恢复  Delete 删除  Esc 关闭";
+    private const string FooterText = "↑↓ 选择  双击/Enter 恢复  Delete 删除  Esc 关闭";
+    private const int TimelineItemHeight = 92;
+    private const int SummaryTopOffset = 31;
+    private const int SummaryHeight = 44;
+    private const int WmNcLButtonDown = 0x00A1;
+    private static readonly nint HtCaption = new(2);
 
     private readonly string imageRoot;
     private readonly Func<HistoryQuery, CancellationToken, Task<IReadOnlyList<ClipboardEntry>>> queryEntries;
@@ -23,7 +29,6 @@ internal sealed class PopupForm : Form
     private CancellationTokenSource? queryCancellation;
     private bool loading;
     private bool previousPageFull;
-    private bool childDialogOpen;
 
     internal PopupForm(
         string imageRoot,
@@ -40,7 +45,8 @@ internal sealed class PopupForm : Form
 
         ClientSize = new Size(560, 620);
         FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
+        ShowInTaskbar = true;
+        Text = "剪贴板历史";
         KeyPreview = true;
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.Manual;
@@ -52,10 +58,11 @@ internal sealed class PopupForm : Form
         searchBox.TextChanged += SearchBox_TextChanged;
         timeline.DrawItem += Timeline_DrawItem;
         timeline.MouseDown += Timeline_MouseDown;
+        timeline.MouseDoubleClick += Timeline_MouseDoubleClick;
         timeline.MouseWheel += Timeline_MouseWheel;
         timeline.SelectedIndexChanged += Timeline_SelectedIndexChanged;
         KeyDown += PopupForm_KeyDown;
-        Deactivate += PopupForm_Deactivate;
+        Activated += PopupForm_Activated;
     }
 
     internal static PopupForm CreateForTest() => new(
@@ -64,14 +71,6 @@ internal sealed class PopupForm : Form
         static (_, _) => Task.CompletedTask,
         static (_, _, _) => Task.CompletedTask,
         static _ => Task.CompletedTask);
-
-    [Browsable(false)]
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal bool ChildDialogOpen
-    {
-        get => childDialogOpen;
-        set => childDialogOpen = value;
-    }
 
     internal void ShowPopup()
     {
@@ -104,6 +103,43 @@ internal sealed class PopupForm : Form
 
     private void BuildLayout()
     {
+        var titleBar = new Panel
+        {
+            Name = "TitleBar",
+            Dock = DockStyle.Top,
+            Height = 36,
+            BackColor = palette.Surface
+        };
+        var titleLabel = new Label
+        {
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12, 0, 0, 0),
+            Text = "剪贴板历史",
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = palette.PrimaryText
+        };
+        var closeButton = new Button
+        {
+            Name = "CloseButton",
+            Dock = DockStyle.Right,
+            Width = 42,
+            Text = "×",
+            FlatStyle = FlatStyle.Flat,
+            BackColor = palette.Surface,
+            ForeColor = palette.SecondaryText,
+            TabStop = false,
+            UseVisualStyleBackColor = false
+        };
+        closeButton.FlatAppearance.BorderSize = 0;
+        closeButton.Click += (_, _) => Hide();
+        closeButton.MouseEnter += (_, _) => closeButton.BackColor = palette.Selection;
+        closeButton.MouseLeave += (_, _) => closeButton.BackColor = palette.Surface;
+        titleBar.MouseDown += TitleBar_MouseDown;
+        titleLabel.MouseDown += TitleBar_MouseDown;
+        titleBar.Controls.Add(titleLabel);
+        titleBar.Controls.Add(closeButton);
+
         var topPanel = new Panel
         {
             Dock = DockStyle.Top,
@@ -145,7 +181,7 @@ internal sealed class PopupForm : Form
         timeline.BorderStyle = BorderStyle.None;
         timeline.DrawMode = DrawMode.OwnerDrawFixed;
         timeline.IntegralHeight = false;
-        timeline.ItemHeight = 78;
+        timeline.ItemHeight = TimelineItemHeight;
         timeline.BackColor = palette.Background;
         timeline.ForeColor = palette.PrimaryText;
 
@@ -153,6 +189,7 @@ internal sealed class PopupForm : Form
         Controls.Add(footer);
         Controls.Add(filterPanel);
         Controls.Add(topPanel);
+        Controls.Add(titleBar);
     }
 
     private void AddFilterButton(Control parent, PopupFilter filter, string text)
@@ -179,6 +216,8 @@ internal sealed class PopupForm : Form
         searchTimer.Stop();
         searchTimer.Start();
     }
+
+    private void PopupForm_Activated(object? sender, EventArgs e) => _ = RefreshAsync(append: false);
 
     private void SearchTimer_Tick(object? sender, EventArgs e)
     {
@@ -339,8 +378,22 @@ internal sealed class PopupForm : Form
         string time = view.Entry.LastUsedAt.ToLocalTime().ToString("MM-dd HH:mm");
         e.Graphics.DrawString(time, Font, secondaryBrush, textLeft, e.Bounds.Top + 9);
         using var summaryFont = new Font(Font.FontFamily, 10F, FontStyle.Regular);
-        var summaryBounds = new RectangleF(textLeft, e.Bounds.Top + 31, Math.Max(1, starBounds.Left - textLeft - 8), 38);
-        e.Graphics.DrawString(view.DisplayText, summaryFont, primaryBrush, summaryBounds);
+        RectangleF summaryBounds = GetSummaryBounds(e.Bounds, textLeft, starBounds.Left);
+        using var summaryFormat = new StringFormat(StringFormat.GenericTypographic)
+        {
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.LineLimit
+        };
+        var graphicsState = e.Graphics.Save();
+        try
+        {
+            e.Graphics.SetClip(summaryBounds);
+            e.Graphics.DrawString(view.DisplayText, summaryFont, primaryBrush, summaryBounds, summaryFormat);
+        }
+        finally
+        {
+            e.Graphics.Restore(graphicsState);
+        }
         e.Graphics.DrawString(view.Entry.IsFavorite ? "★" : "☆", summaryFont, accentBrush, starBounds);
         e.Graphics.DrawLine(borderPen, e.Bounds.Left + 10, e.Bounds.Bottom - 1, e.Bounds.Right - 10, e.Bounds.Bottom - 1);
         e.DrawFocusRectangle();
@@ -356,15 +409,26 @@ internal sealed class PopupForm : Form
 
         if (GetStarBounds(timeline.GetItemRectangle(index)).Contains(e.Location))
         {
+            if (e.Clicks > 1) return;
             bool favorite = !view.Entry.IsFavorite;
             if (await TryRunUiActionAsync(() => setFavorite(view.Entry.Id, favorite, CancellationToken.None)))
             {
                 view.UpdateFavorite(favorite);
                 timeline.Invalidate(timeline.GetItemRectangle(index));
             }
-            return;
         }
+    }
 
+    private async void Timeline_MouseDoubleClick(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        int index = timeline.IndexFromPoint(e.Location);
+        if (index == ListBox.NoMatches) return;
+        Rectangle itemBounds = timeline.GetItemRectangle(index);
+        if (GetStarBounds(itemBounds).Contains(e.Location)) return;
+
+        timeline.SelectedIndex = index;
+        var view = (ClipboardEntryView)timeline.Items[index];
         if (await TryRunUiActionAsync(() => activateEntry(view.Entry))) Hide();
     }
 
@@ -441,9 +505,11 @@ internal sealed class PopupForm : Form
         }
     }
 
-    private void PopupForm_Deactivate(object? sender, EventArgs e)
+    private void TitleBar_MouseDown(object? sender, MouseEventArgs e)
     {
-        if (!childDialogOpen) Hide();
+        if (e.Button != MouseButtons.Left) return;
+        ReleaseCapture();
+        SendMessage(Handle, WmNcLButtonDown, HtCaption, nint.Zero);
     }
 
     private static Rectangle GetStarBounds(Rectangle itemBounds) => new(
@@ -452,9 +518,22 @@ internal sealed class PopupForm : Form
         30,
         30);
 
+    internal static RectangleF GetSummaryBounds(Rectangle itemBounds, int textLeft, int starLeft) => new(
+        textLeft,
+        itemBounds.Top + SummaryTopOffset,
+        Math.Max(1, starLeft - textLeft - 8),
+        SummaryHeight);
+
     private void DisposeViews()
     {
         foreach (ClipboardEntryView view in timeline.Items.OfType<ClipboardEntryView>()) view.Dispose();
         timeline.Items.Clear();
     }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern nint SendMessage(nint window, int message, nint wParam, nint lParam);
 }

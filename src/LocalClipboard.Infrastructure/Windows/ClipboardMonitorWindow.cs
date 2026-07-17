@@ -32,13 +32,15 @@ public sealed partial class ClipboardMonitorWindow : NativeWindow, IDisposable, 
         }
     }
 
+    public bool IsPaused { get; set; }
+
     public void SuppressNextNotification() => Interlocked.Exchange(ref suppressNext, 1);
 
     public void CancelSuppression() => Interlocked.Exchange(ref suppressNext, 0);
 
     protected override void WndProc(ref Message message)
     {
-        if (message.Msg == WmClipboardUpdate && Interlocked.Exchange(ref suppressNext, 0) == 0)
+        if (message.Msg == WmClipboardUpdate && !IsPaused && Interlocked.Exchange(ref suppressNext, 0) == 0)
         {
             _ = NotifyChangedAsync();
         }

@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using LocalClipboard.Core.Models;
 using LocalClipboard.Infrastructure.Windows;
@@ -65,6 +66,33 @@ public sealed class ClipboardIntegrationTests : IDisposable
         return Task.CompletedTask;
     });
 
+    [Fact]
+    public Task Monitor_PauseSkipsUpdatesWithoutConsumingSuppression() => StaTest.RunAsync(() =>
+    {
+        const int wmClipboardUpdate = 0x031D;
+        var notification = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var monitor = new ClipboardMonitorWindow(_ =>
+        {
+            notification.TrySetResult();
+            return Task.CompletedTask;
+        });
+
+        monitor.SuppressNextNotification();
+        monitor.IsPaused = true;
+        SendMessage(monitor.Handle, wmClipboardUpdate, nint.Zero, nint.Zero);
+        Thread.Sleep(50);
+        Assert.False(notification.Task.IsCompleted);
+
+        monitor.IsPaused = false;
+        SendMessage(monitor.Handle, wmClipboardUpdate, nint.Zero, nint.Zero);
+        Thread.Sleep(50);
+        Assert.False(notification.Task.IsCompleted);
+
+        SendMessage(monitor.Handle, wmClipboardUpdate, nint.Zero, nint.Zero);
+        Assert.True(notification.Task.Wait(TimeSpan.FromSeconds(2)));
+        return Task.CompletedTask;
+    });
+
     public void Dispose()
     {
         if (Directory.Exists(testRoot)) Directory.Delete(testRoot, recursive: true);
@@ -86,6 +114,9 @@ public sealed class ClipboardIntegrationTests : IDisposable
         public void SuppressNextNotification() => Suppressions++;
         public void CancelSuppression() => Cancellations++;
     }
+
+    [DllImport("user32.dll")]
+    private static extern nint SendMessage(nint window, int message, nint wParam, nint lParam);
 }
 
 internal static class StaTest
