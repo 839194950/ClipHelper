@@ -11,6 +11,17 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>Assets\ClipHelper.ico</ApplicationIcon>
+    <AssemblyName>ClipHelper</AssemblyName>
+    <Product>ClipHelper</Product>
+    <Title>ClipHelper</Title>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\ClipHelper.ico" />
+  </ItemGroup>
 
 </Project>

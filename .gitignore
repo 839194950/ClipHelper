@@ -2,3 +2,5 @@
 .worktrees/
 **/bin/
 **/obj/
+output/
+release/

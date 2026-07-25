@@ -30,10 +30,169 @@ public sealed class PopupFormTests
 
         Assert.Equal(FormBorderStyle.None, form.FormBorderStyle);
         Assert.True(form.ShowInTaskbar);
-        Assert.Equal(new Size(560, 620), form.ClientSize);
+        Assert.NotNull(form.Icon);
+        Assert.True(form.Icon.Width >= 16);
+        Assert.Equal(new Size(600, 1200), form.ClientSize);
+        Assert.Equal(new Padding(1), form.Padding);
         Assert.True(form.KeyPreview);
-        ListBox timeline = Assert.IsType<ListBox>(form.Controls.OfType<ListBox>().Single());
+        BufferedListBox timeline = Assert.IsType<BufferedListBox>(form.Controls.OfType<BufferedListBox>().Single());
         Assert.Equal(92, timeline.ItemHeight);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task PopupForm_UsesRefinedVisualHierarchy() => StaTest.RunAsync(() =>
+    {
+        using PopupForm form = PopupForm.CreateForTest();
+
+        Panel titleBar = Assert.IsType<Panel>(Assert.Single(form.Controls.Find("TitleBar", searchAllChildren: true)));
+        Panel searchPanel = Assert.IsType<Panel>(Assert.Single(form.Controls.Find("SearchPanel", searchAllChildren: true)));
+        FlowLayoutPanel filterPanel = Assert.IsType<FlowLayoutPanel>(Assert.Single(form.Controls.Find("FilterPanel", searchAllChildren: true)));
+        TextBox searchBox = Assert.IsType<TextBox>(Assert.Single(form.Controls.Find("SearchBox", searchAllChildren: true)));
+
+        Assert.Equal(44, titleBar.Height);
+        Assert.Equal(58, searchPanel.Height);
+        Assert.Equal(42, filterPanel.Height);
+        Assert.Equal(BorderStyle.FixedSingle, searchBox.BorderStyle);
+        Assert.True(searchBox.TabStop);
+        Assert.All(filterPanel.Controls.OfType<Button>(), button =>
+        {
+            Assert.Equal(FlatStyle.Flat, button.FlatStyle);
+            Assert.Equal(0, button.FlatAppearance.BorderSize);
+        });
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task PopupForm_UsesPclInspiredVisualHierarchy() => StaTest.RunAsync(() =>
+    {
+        using PopupForm form = PopupForm.CreateForTest();
+
+        Panel accent = Assert.IsType<Panel>(Assert.Single(
+            form.Controls.Find("TitleAccent", searchAllChildren: true)));
+        Panel searchHost = Assert.IsType<Panel>(Assert.Single(
+            form.Controls.Find("SearchHost", searchAllChildren: true)));
+        BufferedListBox timeline = Assert.IsType<BufferedListBox>(Assert.Single(
+            form.Controls.Find("Timeline", searchAllChildren: true)));
+
+        Assert.Equal(DockStyle.Left, accent.Dock);
+        Assert.True(accent.Width >= 4);
+        Assert.True(searchHost.Padding.All >= 1);
+        Assert.Equal(DrawMode.OwnerDrawFixed, timeline.DrawMode);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task PopupForm_TimelineUsesBufferedRendering() => StaTest.RunAsync(() =>
+    {
+        using PopupForm form = PopupForm.CreateForTest();
+
+        BufferedListBox timeline = Assert.IsType<BufferedListBox>(Assert.Single(
+            form.Controls.Find("Timeline", searchAllChildren: true)));
+
+        Assert.True(timeline.UsesOptimizedRendering);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task PopupForm_TimelineScrollsByPixelsDuringWheelAnimation() => StaTest.RunAsync(() =>
+    {
+        using PopupForm form = PopupForm.CreateForTest();
+        BufferedListBox timeline = Assert.IsType<BufferedListBox>(Assert.Single(
+            form.Controls.Find("Timeline", searchAllChildren: true)));
+        timeline.Size = new Size(560, 300);
+        for (int index = 0; index < 20; index++)
+        {
+            timeline.Items.Add(new ClipboardEntryView(new ClipboardEntry(
+                Guid.NewGuid(), ClipboardContentType.Text, $"item {index}", $"hash-{index}",
+                null, null, 0, 0, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, false), null));
+        }
+
+        timeline.RequestWheelScroll(-120);
+        timeline.AdvanceScrollAnimation(TimeSpan.FromMilliseconds(48));
+
+        Assert.InRange(timeline.ScrollOffset, 1, timeline.ItemHeight - 1);
+        Assert.True(timeline.IsScrollAnimating);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task PopupForm_DirectScrollNearBottomLoadsNextPageOnce() => StaTest.RunAsync(() =>
+    {
+        var requestedOffsets = new List<int>();
+        var appendObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        IReadOnlyList<ClipboardEntry> firstPage = Enumerable.Range(0, 100)
+            .Select(index => new ClipboardEntry(
+                Guid.NewGuid(), ClipboardContentType.Text, $"item {index}", $"hash-{index}",
+                null, null, 0, 0, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, false))
+            .ToArray();
+        using var form = new PopupForm(
+            Path.GetTempPath(),
+            (query, _) =>
+            {
+                requestedOffsets.Add(query.Offset);
+                if (query.Offset == 100) appendObserved.TrySetResult();
+                return Task.FromResult(query.Offset == 0 ? firstPage : (IReadOnlyList<ClipboardEntry>)[]);
+            },
+            static (_, _) => Task.CompletedTask,
+            static (_, _, _) => Task.CompletedTask,
+            static _ => Task.CompletedTask);
+
+        form.Show();
+        BufferedListBox timeline = Assert.IsType<BufferedListBox>(Assert.Single(
+            form.Controls.Find("Timeline", searchAllChildren: true)));
+        PumpUntil(() => timeline.Items.Count == 100);
+
+        timeline.RequestScrollTarget(timeline.MaximumScrollOffset);
+        for (int frame = 0; frame < 120 && timeline.IsScrollAnimating; frame++)
+        {
+            timeline.AdvanceScrollAnimation(TimeSpan.FromMilliseconds(16));
+        }
+        PumpUntil(() => appendObserved.Task.IsCompleted);
+        Assert.True(appendObserved.Task.IsCompleted);
+        Application.DoEvents();
+
+        Assert.Equal([0, 100], requestedOffsets);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task PopupForm_SettingsButtonInvokesSettingsAction() => StaTest.RunAsync(() =>
+    {
+        int invocationCount = 0;
+        using PopupForm form = PopupForm.CreateForTest(() => invocationCount++);
+        form.Show();
+        Application.DoEvents();
+
+        Button settingsButton = Assert.IsType<Button>(Assert.Single(
+            form.Controls.Find("SettingsButton", searchAllChildren: true)));
+        settingsButton.PerformClick();
+
+        Assert.Equal(1, invocationCount);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task PopupForm_SearchAndFiltersUseSegmentedControls() => StaTest.RunAsync(() =>
+    {
+        using PopupForm form = PopupForm.CreateForTest();
+        form.Show();
+
+        Button clearButton = Assert.IsType<Button>(Assert.Single(
+            form.Controls.Find("ClearSearchButton", searchAllChildren: true)));
+        Button allFilter = Assert.IsType<Button>(Assert.Single(
+            form.Controls.Find("FilterButton_All", searchAllChildren: true)));
+        TextBox searchBox = Assert.IsType<TextBox>(Assert.Single(
+            form.Controls.Find("SearchBox", searchAllChildren: true)));
+
+        Assert.False(clearButton.Visible);
+        Assert.Equal(FlatStyle.Flat, allFilter.FlatStyle);
+        Assert.Equal(0, allFilter.FlatAppearance.BorderSize);
+
+        searchBox.Text = "query";
+        Assert.True(clearButton.Visible);
+        clearButton.PerformClick();
+        Assert.Equal(string.Empty, searchBox.Text);
         return Task.CompletedTask;
     });
 
@@ -101,7 +260,7 @@ public sealed class PopupFormTests
     {
         int activationCount = 0;
         using PopupForm form = CreateInteractiveForm(() => activationCount++);
-        ListBox timeline = PrepareTimeline(form);
+        BufferedListBox timeline = PrepareTimeline(form);
         Rectangle itemBounds = timeline.GetItemRectangle(0);
         var click = new MouseEventArgs(MouseButtons.Left, 1, itemBounds.Left + 24, itemBounds.Top + 45, 0);
 
@@ -123,7 +282,7 @@ public sealed class PopupFormTests
         int activationCount = 0;
         int favoriteCount = 0;
         using PopupForm form = CreateInteractiveForm(() => activationCount++, () => favoriteCount++);
-        ListBox timeline = PrepareTimeline(form);
+        BufferedListBox timeline = PrepareTimeline(form);
         Rectangle itemBounds = timeline.GetItemRectangle(0);
         int starX = itemBounds.Right - 27;
         int starY = itemBounds.Top + 36;
@@ -152,10 +311,10 @@ public sealed class PopupFormTests
             return Task.CompletedTask;
         });
 
-    private static ListBox PrepareTimeline(PopupForm form)
+    private static BufferedListBox PrepareTimeline(PopupForm form)
     {
         form.CreateControl();
-        ListBox timeline = Assert.IsType<ListBox>(form.Controls.OfType<ListBox>().Single());
+        BufferedListBox timeline = Assert.IsType<BufferedListBox>(form.Controls.OfType<BufferedListBox>().Single());
         timeline.CreateControl();
         var entry = new ClipboardEntry(
             Guid.NewGuid(), ClipboardContentType.Text, "long text", "hash", null, null, 0, 0, 0,
@@ -168,4 +327,14 @@ public sealed class PopupFormTests
         typeof(Control)
             .GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(control, [args]);
+
+    private static void PumpUntil(Func<bool> condition)
+    {
+        for (int attempt = 0; attempt < 100 && !condition(); attempt++)
+        {
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+        Assert.True(condition());
+    }
 }

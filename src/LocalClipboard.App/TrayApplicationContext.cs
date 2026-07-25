@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using LocalClipboard.App.UI;
 using LocalClipboard.Core.Models;
 using LocalClipboard.Core.Services;
@@ -23,6 +23,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ContextMenuStrip trayMenu;
     private readonly ToolStripMenuItem pauseItem;
     private readonly NotifyIcon notifyIcon;
+    private readonly Icon appIcon;
     private readonly CancellationTokenSource lifetime = new();
 
     private AppSettings currentSettings;
@@ -58,7 +59,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             historyService.QueryAsync,
             historyService.DeleteAsync,
             historyService.SetFavoriteAsync,
-            ActivateEntryAsync);
+            ActivateEntryAsync,
+            () => ShowSettings(null, EventArgs.Empty));
         _ = popup.Handle;
 
         var openItem = new ToolStripMenuItem("打开历史", null, (_, _) => ShowPopup());
@@ -69,11 +71,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         trayMenu = new ContextMenuStrip();
         trayMenu.Items.AddRange([openItem, pauseItem, settingsItem, clearItem, new ToolStripSeparator(), exitItem]);
 
+        appIcon = TrayIconFactory.Create();
         notifyIcon = new NotifyIcon
         {
             ContextMenuStrip = trayMenu,
-            Icon = SystemIcons.Application,
-            Text = "Local Clipboard",
+            Icon = appIcon,
+            Text = "ClipHelper",
             Visible = true
         };
         notifyIcon.DoubleClick += (_, _) => ShowPopup();
@@ -115,6 +118,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         monitor.Dispose();
         hotkeyManager.Dispose();
         notifyIcon.Dispose();
+        appIcon.Dispose();
         trayMenu.Dispose();
         base.ExitThreadCore();
     }
@@ -168,7 +172,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         monitor.IsPaused = !monitor.IsPaused;
         pauseItem.Text = monitor.IsPaused ? "恢复监听" : "暂停监听";
-        notifyIcon.Icon = monitor.IsPaused ? SystemIcons.Warning : SystemIcons.Application;
+        notifyIcon.Icon = monitor.IsPaused ? SystemIcons.Warning : appIcon;
     }
 
     private async void ShowSettings(object? sender, EventArgs e)
@@ -186,7 +190,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception exception)
         {
             await LogSafelyAsync("settings_dialog_failed", exception);
-            MessageBox.Show("设置窗口打开失败。", "Local Clipboard", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show("设置窗口打开失败。", "ClipHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -253,7 +257,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception exception)
         {
             await LogSafelyAsync("clear_history_failed", exception);
-            MessageBox.Show("清空历史失败。", "Local Clipboard", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show("清空历史失败。", "ClipHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 

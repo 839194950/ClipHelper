@@ -39,8 +39,8 @@ internal static class Program
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "LocalClipboard");
             MessageBox.Show(
-                $"Local Clipboard 启动失败（{GetErrorCategory(exception)}）。\n\n数据目录：{dataDirectory}",
-                "Local Clipboard",
+                $"ClipHelper 启动失败（{GetErrorCategory(exception)}）。\n\n数据目录：{dataDirectory}",
+                "ClipHelper",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }

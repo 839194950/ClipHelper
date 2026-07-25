@@ -11,6 +11,21 @@ internal sealed record ThemePalette(
     Color Accent,
     Color Selection)
 {
+    public Color MutedSurface => Blend(Surface, Background, 0.45f);
+    public Color SoftAccent => Blend(Accent, Surface, 0.82f);
+    public Color HoverBorder => Blend(Accent, Border, 0.38f);
+    public Color Shadow => Color.FromArgb(28, Color.Black);
+
+    private static Color Blend(Color first, Color second, float secondWeight)
+    {
+        float firstWeight = 1f - secondWeight;
+        return Color.FromArgb(
+            (int)(first.A * firstWeight + second.A * secondWeight),
+            (int)(first.R * firstWeight + second.R * secondWeight),
+            (int)(first.G * firstWeight + second.G * secondWeight),
+            (int)(first.B * firstWeight + second.B * secondWeight));
+    }
+
     public static ThemePalette ReadCurrent()
     {
         if (SystemInformation.HighContrast)
