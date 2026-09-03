@@ -22,6 +22,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly PopupForm popup;
     private readonly ContextMenuStrip trayMenu;
     private readonly ToolStripMenuItem pauseItem;
+    private readonly ToolStripMenuItem openItem;
+    private readonly ToolStripMenuItem settingsItem;
+    private readonly ToolStripMenuItem clearItem;
+    private readonly ToolStripMenuItem exitItem;
     private readonly NotifyIcon notifyIcon;
     private readonly Icon appIcon;
     private readonly CancellationTokenSource lifetime = new();
@@ -63,11 +67,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             () => ShowSettings(null, EventArgs.Empty));
         _ = popup.Handle;
 
-        var openItem = new ToolStripMenuItem("打开历史", null, (_, _) => ShowPopup());
+        openItem = new ToolStripMenuItem("打开历史", null, (_, _) => ShowPopup());
         pauseItem = new ToolStripMenuItem("暂停监听", null, (_, _) => TogglePause());
-        var settingsItem = new ToolStripMenuItem("设置", null, ShowSettings);
-        var clearItem = new ToolStripMenuItem("清空历史", null, ClearHistory);
-        var exitItem = new ToolStripMenuItem("退出", null, (_, _) => ExitThread());
+        settingsItem = new ToolStripMenuItem("设置", null, ShowSettings);
+        clearItem = new ToolStripMenuItem("清空历史", null, ClearHistory);
+        exitItem = new ToolStripMenuItem("退出", null, (_, _) => ExitThread());
         trayMenu = new ContextMenuStrip();
         trayMenu.Items.AddRange([openItem, pauseItem, settingsItem, clearItem, new ToolStripSeparator(), exitItem]);
 
@@ -80,11 +84,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Visible = true
         };
         notifyIcon.DoubleClick += (_, _) => ShowPopup();
+        ApplyLanguage(settings.Language);
 
         TryRegisterInitialHotkey();
         if (recoveredCorruption)
         {
-            ShowNotification("数据库已恢复", "检测到损坏的历史数据库，原文件已移至 recovery 目录。", ToolTipIcon.Warning);
+            ShowNotification(
+                settings.Language == AppLanguage.English ? "Database recovered" : "数据库已恢复",
+                settings.Language == AppLanguage.English ? "A damaged history database was moved to the recovery directory." : "检测到损坏的历史数据库，原文件已移至 recovery 目录。",
+                ToolTipIcon.Warning);
         }
     }
 
@@ -136,8 +144,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 {
                     oversizedImageNotified = true;
                     ShowNotification(
-                        "图片未保存",
-                        "图片超过 20 MB，已跳过本次剪贴板记录。",
+                        currentSettings.Language == AppLanguage.English ? "Image not saved" : "图片未保存",
+                        currentSettings.Language == AppLanguage.English ? "The image exceeds 20 MB, so this clipboard entry was skipped." : "图片超过 20 MB，已跳过本次剪贴板记录。",
                         ToolTipIcon.Warning);
                 }
                 return;
@@ -171,7 +179,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void TogglePause()
     {
         monitor.IsPaused = !monitor.IsPaused;
-        pauseItem.Text = monitor.IsPaused ? "恢复监听" : "暂停监听";
+        pauseItem.Text = monitor.IsPaused ? (currentSettings.Language == AppLanguage.English ? "Resume monitoring" : "恢复监听") : (currentSettings.Language == AppLanguage.English ? "Pause monitoring" : "暂停监听");
         notifyIcon.Icon = monitor.IsPaused ? SystemIcons.Warning : appIcon;
     }
 
@@ -190,7 +198,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception exception)
         {
             await LogSafelyAsync("settings_dialog_failed", exception);
-            MessageBox.Show("设置窗口打开失败。", "ClipHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(currentSettings.Language == AppLanguage.English ? "Failed to open settings." : "设置窗口打开失败。", "ClipHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -207,7 +215,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             RestoreHotkey(previous, previousHotkeyRegistered);
             await LogSafelyAsync("hotkey_registration_failed", exception);
-            ShowNotification("快捷键未更改", "新快捷键已被占用，原快捷键保持不变。", ToolTipIcon.Warning);
+            ShowNotification(
+                previous.Language == AppLanguage.English ? "Hotkey unchanged" : "快捷键未更改",
+                previous.Language == AppLanguage.English ? "The new hotkey is already in use. The previous hotkey remains active." : "新快捷键已被占用，原快捷键保持不变。",
+                ToolTipIcon.Warning);
             return false;
         }
 
@@ -223,6 +234,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             await settingsStore.SaveAsync(settings, CancellationToken.None);
             currentSettings = settings;
+            ApplyLanguage(settings.Language);
             return true;
         }
         catch (Exception exception)
@@ -241,7 +253,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             await LogSafelyAsync("settings_save_failed", exception);
-            ShowNotification("设置未保存", "设置写入失败，请检查数据目录权限。", ToolTipIcon.Warning);
+            ShowNotification(
+                previous.Language == AppLanguage.English ? "Settings not saved" : "设置未保存",
+                previous.Language == AppLanguage.English ? "Failed to write settings. Check the data directory permissions." : "设置写入失败，请检查数据目录权限。",
+                ToolTipIcon.Warning);
             throw;
         }
     }
@@ -250,15 +265,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            using var dialog = new ClearHistoryDialog();
+            using var dialog = new ClearHistoryDialog(currentSettings.Language);
             if (ShowOwnedDialog(dialog) != DialogResult.OK) return;
             await historyService.ClearAsync(dialog.IncludeFavorites, CancellationToken.None);
         }
         catch (Exception exception)
         {
             await LogSafelyAsync("clear_history_failed", exception);
-            MessageBox.Show("清空历史失败。", "ClipHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(currentSettings.Language == AppLanguage.English ? "Failed to clear history." : "清空历史失败。", "ClipHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private void ApplyLanguage(AppLanguage language)
+    {
+        bool english = language == AppLanguage.English;
+        openItem.Text = english ? "Open history" : "打开历史";
+        pauseItem.Text = monitor.IsPaused ? (english ? "Resume monitoring" : "恢复监听") : (english ? "Pause monitoring" : "暂停监听");
+        settingsItem.Text = english ? "Settings" : "设置";
+        clearItem.Text = english ? "Clear history" : "清空历史";
+        exitItem.Text = english ? "Exit" : "退出";
+        popup.ApplyLanguage(language);
     }
 
     private async Task ListenForSecondaryInstancesAsync()
@@ -304,7 +330,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             hotkeyRegistered = false;
             _ = LogSafelyAsync("initial_hotkey_registration_failed", exception);
-            ShowNotification("快捷键不可用", "当前快捷键已被占用，请从托盘菜单打开设置。", ToolTipIcon.Warning);
+            ShowNotification(
+                currentSettings.Language == AppLanguage.English ? "Hotkey unavailable" : "快捷键不可用",
+                currentSettings.Language == AppLanguage.English ? "The current hotkey is already in use. Open Settings from the tray menu." : "当前快捷键已被占用，请从托盘菜单打开设置。",
+                ToolTipIcon.Warning);
         }
     }
 

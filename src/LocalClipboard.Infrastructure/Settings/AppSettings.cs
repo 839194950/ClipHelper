@@ -12,10 +12,17 @@ public enum HotkeyModifiers : uint
     Windows = 8,
 }
 
+public enum AppLanguage
+{
+    Chinese,
+    English,
+}
+
 public sealed record AppSettings(
     bool StartWithWindows,
     HotkeyModifiers HotkeyModifiers,
-    Keys HotkeyKey)
+    Keys HotkeyKey,
+    AppLanguage Language = AppLanguage.English)
 {
-    public static AppSettings Default { get; } = new(true, HotkeyModifiers.Alt, Keys.V);
+    public static AppSettings Default { get; } = new(true, HotkeyModifiers.Alt, Keys.V, AppLanguage.English);
 }

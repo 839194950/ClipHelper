@@ -12,6 +12,7 @@ internal sealed class SettingsForm : Form
     private readonly TextBox hotkeyBox = new();
     private readonly Label validationLabel = new();
     private readonly Label cacheLabel = new();
+    private readonly ComboBox languageBox = new();
     private readonly Button saveButton = new();
     private HotkeyModifiers selectedModifiers;
     private Keys selectedKey;
@@ -29,8 +30,9 @@ internal sealed class SettingsForm : Form
         this.openDataDirectory = openDataDirectory ?? throw new ArgumentNullException(nameof(openDataDirectory));
         selectedModifiers = currentSettings.HotkeyModifiers;
         selectedKey = currentSettings.HotkeyKey;
+        Language = currentSettings.Language;
 
-        Text = "设置";
+        Text = UiStrings.SettingsTitle(Language);
         ClientSize = new Size(460, 360);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -42,6 +44,8 @@ internal sealed class SettingsForm : Form
 
         BuildControls(currentSettings, cacheBytes, dataDirectory);
     }
+
+    private AppLanguage Language { get; }
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -66,14 +70,14 @@ internal sealed class SettingsForm : Form
     {
         startupCheck.AutoSize = true;
         startupCheck.Location = new Point(24, 24);
-        startupCheck.Text = "随 Windows 启动";
+        startupCheck.Text = UiStrings.StartWithWindows(Language);
         startupCheck.Checked = currentSettings.StartWithWindows;
 
         var hotkeyLabel = new Label
         {
             AutoSize = true,
             Location = new Point(24, 64),
-            Text = "全局快捷键"
+            Text = UiStrings.GlobalHotkey(Language)
         };
         hotkeyBox.Location = new Point(24, 88);
         hotkeyBox.Size = new Size(412, 27);
@@ -91,7 +95,7 @@ internal sealed class SettingsForm : Form
         {
             AutoSize = true,
             Location = new Point(24, 151),
-            Text = "数据目录"
+            Text = UiStrings.DataDirectory(Language)
         };
         var directoryPath = new Label
         {
@@ -106,7 +110,7 @@ internal sealed class SettingsForm : Form
         {
             Location = new Point(346, 174),
             Size = new Size(90, 30),
-            Text = "打开数据目录"
+            Text = UiStrings.OpenDataDirectory(Language)
         };
         openButton.Click += (_, _) => openDataDirectory();
 
@@ -114,22 +118,29 @@ internal sealed class SettingsForm : Form
         {
             AutoSize = true,
             Location = new Point(24, 224),
-            Text = "普通历史：最多 500 条 / 30 天"
+            Text = UiStrings.Retention(Language)
         };
         cacheLabel.AutoSize = true;
         cacheLabel.Location = new Point(24, 252);
-        cacheLabel.Text = $"当前图片缓存：{FormatBytes(cacheBytes)}";
+        cacheLabel.Text = UiStrings.CacheUsage(Language, FormatBytes(cacheBytes));
+
+        var languageLabel = new Label { AutoSize = true, Location = new Point(24, 280), Text = UiStrings.Language(Language) };
+        languageBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        languageBox.Location = new Point(110, 276);
+        languageBox.Size = new Size(150, 28);
+        languageBox.Items.AddRange(["中文", "English"]);
+        languageBox.SelectedIndex = Language == AppLanguage.English ? 1 : 0;
 
         saveButton.Location = new Point(260, 310);
         saveButton.Size = new Size(84, 32);
-        saveButton.Text = "保存";
+        saveButton.Text = UiStrings.Save(Language);
         saveButton.Click += SaveButton_Click;
         var cancelButton = new Button
         {
             DialogResult = DialogResult.Cancel,
             Location = new Point(352, 310),
             Size = new Size(84, 32),
-            Text = "取消"
+            Text = UiStrings.Cancel(Language)
         };
 
         AcceptButton = saveButton;
@@ -144,6 +155,8 @@ internal sealed class SettingsForm : Form
             openButton,
             retentionLabel,
             cacheLabel,
+            languageLabel,
+            languageBox,
             saveButton,
             cancelButton]);
     }
@@ -159,17 +172,17 @@ internal sealed class SettingsForm : Form
 
         if (IsModifierKey(key))
         {
-            ShowValidation("请输入一个非修饰键");
+            ShowValidation(Language == AppLanguage.English ? "Enter a non-modifier key" : "请输入一个非修饰键");
             return;
         }
         if (modifiers == HotkeyModifiers.None)
         {
-            ShowValidation("快捷键必须包含 Alt、Ctrl、Shift 或 Win");
+            ShowValidation(Language == AppLanguage.English ? "The hotkey must include Alt, Ctrl, Shift, or Win" : "快捷键必须包含 Alt、Ctrl、Shift 或 Win");
             return;
         }
         if ((modifiers & HotkeyModifiers.Windows) != 0 && key == Keys.V)
         {
-            ShowValidation("Win + V 已由 Windows 使用");
+            ShowValidation(Language == AppLanguage.English ? "Win + V is reserved by Windows" : "Win + V 已由 Windows 使用");
             return;
         }
 
@@ -184,7 +197,11 @@ internal sealed class SettingsForm : Form
         saveButton.Enabled = false;
         try
         {
-            var settings = new AppSettings(startupCheck.Checked, selectedModifiers, selectedKey);
+            var settings = new AppSettings(
+                startupCheck.Checked,
+                selectedModifiers,
+                selectedKey,
+                languageBox.SelectedIndex == 1 ? AppLanguage.English : AppLanguage.Chinese);
             if (await saveSettings(settings))
             {
                 DialogResult = DialogResult.OK;
@@ -192,11 +209,11 @@ internal sealed class SettingsForm : Form
                 return;
             }
 
-            ShowValidation("快捷键已被其他程序占用");
+            ShowValidation(Language == AppLanguage.English ? "The hotkey is already in use" : "快捷键已被其他程序占用");
         }
         catch (Exception)
         {
-            ShowValidation("设置保存失败");
+            ShowValidation(Language == AppLanguage.English ? "Failed to save settings" : "设置保存失败");
         }
         finally
         {

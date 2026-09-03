@@ -145,11 +145,32 @@ public sealed class JsonSettingsStore
 
         HotkeyModifiers hotkeyModifiers = ParseHotkeyModifiers(root);
         Keys hotkeyKey = ParseHotkeyKey(root);
+        AppLanguage language = ParseLanguage(root);
 
         return new AppSettings(
             startWithWindows,
             hotkeyModifiers,
-            hotkeyKey);
+            hotkeyKey,
+            language);
+    }
+
+    private static AppLanguage ParseLanguage(JsonElement root)
+    {
+        if (!root.TryGetProperty(nameof(AppSettings.Language), out JsonElement element))
+            return AppSettings.Default.Language;
+
+        AppLanguage language;
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out int rawLanguage))
+            language = (AppLanguage)rawLanguage;
+        else if (element.ValueKind == JsonValueKind.String &&
+            Enum.TryParse(element.GetString(), ignoreCase: true, out AppLanguage parsedLanguage))
+            language = parsedLanguage;
+        else
+            return AppSettings.Default.Language;
+
+        if (!Enum.IsDefined(language)) return AppSettings.Default.Language;
+
+        return language;
     }
 
     private static HotkeyModifiers ParseHotkeyModifiers(JsonElement root)

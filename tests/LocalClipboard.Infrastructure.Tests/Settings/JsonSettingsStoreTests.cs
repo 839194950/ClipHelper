@@ -62,7 +62,8 @@ public sealed class JsonSettingsStoreTests : IDisposable
         var expected = new AppSettings(
             false,
             HotkeyModifiers.Control | HotkeyModifiers.Shift,
-            Keys.Space);
+            Keys.Space,
+            AppLanguage.English);
 
         await store.SaveAsync(expected, default);
 
@@ -83,6 +84,20 @@ public sealed class JsonSettingsStoreTests : IDisposable
         Assert.Empty(Directory.Exists(RecoveryDirectory)
             ? Directory.GetFiles(RecoveryDirectory)
             : []);
+    }
+
+    [Fact]
+    public async Task LoadAsync_MissingLanguageDefaultsToEnglish()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        await File.WriteAllTextAsync(
+            SettingsPath,
+            """{"StartWithWindows":false,"HotkeyModifiers":2,"HotkeyKey":32}""");
+        var store = new JsonSettingsStore(SettingsPath, RecoveryDirectory);
+
+        AppSettings settings = await store.LoadAsync(default);
+
+        Assert.Equal(AppLanguage.English, settings.Language);
     }
 
     [Theory]

@@ -1,6 +1,7 @@
 using LocalClipboard.App.IntegrationTests.Windows;
 using LocalClipboard.App.UI;
 using LocalClipboard.Infrastructure.Settings;
+using System.Windows.Forms;
 
 namespace LocalClipboard.App.IntegrationTests.UI;
 
@@ -25,6 +26,18 @@ public sealed class SettingsFormTests
         using var dialog = new ClearHistoryDialog();
 
         Assert.False(dialog.IncludeFavorites);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
+    public Task SettingsForm_AppliesEnglishLanguage() => StaTest.RunAsync(() =>
+    {
+        AppSettings settings = AppSettings.Default with { Language = AppLanguage.English };
+        using SettingsForm form = SettingsForm.CreateForTest(settings, cacheBytes: 0);
+
+        Assert.Equal("Settings", form.Text);
+        Assert.Contains(form.Controls.Cast<Control>(), control => control.Text == "Start with Windows");
+        Assert.Contains(form.Controls.Cast<Control>(), control => control.Text == "Save");
         return Task.CompletedTask;
     });
 }

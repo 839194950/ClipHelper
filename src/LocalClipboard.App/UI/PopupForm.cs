@@ -2,12 +2,12 @@
 using System.Runtime.InteropServices;
 using LocalClipboard.App;
 using LocalClipboard.Core.Models;
+using LocalClipboard.Infrastructure.Settings;
 
 namespace LocalClipboard.App.UI;
 
 internal sealed class PopupForm : Form
 {
-    private const string FooterText = "↑↓ 选择  双击/Enter 恢复  Delete 删除  Esc 关闭";
     private const int TimelineItemHeight = 92;
     private const int SummaryTopOffset = 31;
     private const int SummaryHeight = 44;
@@ -34,6 +34,7 @@ internal sealed class PopupForm : Form
     private PopupQueryState queryState = new(null, PopupFilter.All);
     private CancellationTokenSource? queryCancellation;
     private bool loading;
+    private AppLanguage language = AppLanguage.Chinese;
     private bool previousPageFull;
     private int hoveredIndex = -1;
 
@@ -104,6 +105,24 @@ internal sealed class PopupForm : Form
         Activate();
         searchBox.Focus();
         _ = RefreshAsync(append: false);
+    }
+
+    internal void ApplyLanguage(AppLanguage language)
+    {
+        this.language = language;
+        bool english = language == AppLanguage.English;
+        searchBox.PlaceholderText = language == AppLanguage.English ? "Search clipboard history..." : "搜索剪贴板历史…";
+        searchBox.AccessibleName = language == AppLanguage.English ? "Search" : "搜索";
+        clearSearchButton.AccessibleName = language == AppLanguage.English ? "Clear search" : "清除搜索";
+        footer.Text = english
+            ? "Up/Down select  Double-click/Enter restore  Delete remove  Esc close"
+            : "↑↓ 选择  双击/Enter 恢复  Delete 删除  Esc 关闭";
+        if (Controls.Find("SettingsButton", true).FirstOrDefault() is Button settingsButton)
+            settingsButton.AccessibleName = english ? "Open settings" : "打开设置";
+        if (filterButtons.TryGetValue(PopupFilter.All, out Button? allButton)) allButton.Text = english ? "All" : "全部";
+        if (filterButtons.TryGetValue(PopupFilter.Text, out Button? textButton)) textButton.Text = english ? "Text" : "文本";
+        if (filterButtons.TryGetValue(PopupFilter.Images, out Button? imagesButton)) imagesButton.Text = english ? "Images" : "图片";
+        if (filterButtons.TryGetValue(PopupFilter.Favorites, out Button? favoritesButton)) favoritesButton.Text = english ? "Favorites" : "收藏";
     }
 
     protected override void Dispose(bool disposing)
@@ -257,7 +276,7 @@ internal sealed class PopupForm : Form
 
         footer.Dock = DockStyle.Bottom;
         footer.Height = 32;
-        footer.Text = FooterText;
+        ApplyLanguage(language);
         footer.TextAlign = ContentAlignment.MiddleCenter;
         footer.BackColor = palette.Surface;
         footer.ForeColor = palette.SecondaryText;
@@ -384,14 +403,14 @@ internal sealed class PopupForm : Form
             }
 
             previousPageFull = entries.Count == 100;
-            footer.Text = FooterText;
+            ApplyLanguage(language);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
         }
         catch (Exception)
         {
-            if (!IsDisposed) footer.Text = "加载失败，请稍后重试";
+            if (!IsDisposed) footer.Text = language == AppLanguage.English ? "Loading failed. Please try again." : "加载失败，请稍后重试";
         }
         finally
         {
@@ -609,12 +628,12 @@ internal sealed class PopupForm : Form
         try
         {
             await action();
-            footer.Text = FooterText;
+            ApplyLanguage(language);
             return true;
         }
         catch (Exception)
         {
-            footer.Text = "操作失败，请稍后重试";
+            footer.Text = language == AppLanguage.English ? "Operation failed. Please try again." : "操作失败，请稍后重试";
             return false;
         }
     }
